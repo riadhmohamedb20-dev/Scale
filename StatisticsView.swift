@@ -8,6 +8,10 @@ struct StatisticsView: View {
         viewModel.taskTimeSummaries
     }
 
+    private var typeSummaries: [ActivityTypeTimeSummary] {
+        viewModel.activityTypeTimeSummaries
+    }
+
     private var totalTrackedTime: TimeInterval {
         summaries.reduce(0) { $0 + $1.duration }
     }
@@ -25,6 +29,7 @@ struct StatisticsView: View {
                     .padding(.top, 22)
 
                 summaryCards
+                activityBalanceCard
 
                 if summaries.isEmpty {
                     emptyState
@@ -50,9 +55,43 @@ struct StatisticsView: View {
         }
     }
 
+    private var activityBalanceCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Activity Balance")
+                .font(.title3.bold())
+                .foregroundStyle(.primary)
+
+            VStack(spacing: 12) {
+                ForEach(typeSummaries) { summary in
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(color(for: summary.activityType))
+                            .frame(width: 12, height: 12)
+
+                        Text(summary.activityType.title)
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(.primary)
+
+                        Spacer()
+
+                        Text(balanceDuration(Int(summary.duration)))
+                            .font(.body.monospacedDigit())
+                            .foregroundStyle(.secondary)
+
+                        Text("\(summary.percentage)%")
+                            .font(.body.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(.primary)
+                            .frame(width: 44, alignment: .trailing)
+                    }
+                }
+            }
+        }
+        .cardStyle()
+    }
+
     private var chartsGrid: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 14)], spacing: 14) {
-            chartCard(title: "Time by task") {
+            chartCard(title: "Time by activity") {
                 Chart(summaries) { summary in
                     SectorMark(
                         angle: .value("Time", summary.duration),
@@ -64,11 +103,11 @@ struct StatisticsView: View {
                 .frame(height: 150)
             }
 
-            chartCard(title: "Task totals") {
+            chartCard(title: "Activity totals") {
                 Chart(summaries) { summary in
                     BarMark(
                         x: .value("Time", summary.duration),
-                        y: .value("Task", summary.taskName)
+                        y: .value("Activity", summary.taskName)
                     )
                     .foregroundStyle(summary.color.color)
                 }
@@ -99,7 +138,7 @@ struct StatisticsView: View {
 
     private var taskTotalsCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Completed sessions by task")
+            Text("Completed sessions by activity")
                 .font(.title3.bold())
                 .foregroundStyle(.primary)
 
@@ -171,6 +210,32 @@ struct StatisticsView: View {
             content()
         }
         .cardStyle()
+    }
+
+    private func color(for activityType: ActivityType) -> Color {
+        switch activityType {
+        case .pain:
+            return .red
+        case .pleasure:
+            return .purple
+        case .rest:
+            return .green
+        }
+    }
+
+    private func balanceDuration(_ seconds: Int) -> String {
+        if seconds < 60 {
+            return String(format: "00:%02d", max(seconds, 0))
+        }
+
+        let h = seconds / 3600
+        let m = (seconds % 3600) / 60
+
+        if h > 0 {
+            return String(format: "%dh %02dm", h, m)
+        } else {
+            return "\(m)m"
+        }
     }
 }
 

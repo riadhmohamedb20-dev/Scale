@@ -86,6 +86,10 @@ struct ContentView: View {
                     get: { viewModel.editingTaskDescription },
                     set: viewModel.updateEditingTaskDescription
                 ),
+                taskType: Binding(
+                    get: { viewModel.editingTaskType },
+                    set: viewModel.updateEditingTaskType
+                ),
                 onDone: viewModel.closeTaskEditor,
                 onDelete: viewModel.deleteEditingTask
             )
@@ -95,6 +99,7 @@ struct ContentView: View {
                 taskName: $viewModel.newTaskName,
                 taskColor: $viewModel.newTaskColor,
                 taskDescription: $viewModel.newTaskDescription,
+                taskType: $viewModel.newTaskType,
                 onDone: viewModel.addTask
             )
         }
@@ -103,9 +108,7 @@ struct ContentView: View {
                 tasks: viewModel.orderedTasksForSelectedDay,
                 onSelect: { task in
                     if viewModel.selectTaskAndStart(task) {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            selectedTimelinePage = 1
-                        }
+                        switchToHourlyPage()
                     }
                 },
                 onCancel: viewModel.closeTaskPicker
@@ -187,6 +190,15 @@ struct ContentView: View {
                 } else {
                     pastDayControls
                         .padding(.bottom, 24)
+                }
+            }
+            .background {
+                if !viewModel.isViewingToday {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            viewModel.clearPastDayActivitySelectionFromBackgroundTap()
+                        }
                 }
             }
         }
@@ -359,6 +371,7 @@ struct ContentView: View {
             displayElapsed: viewModel.timelineDisplayElapsed,
             currentTime: viewModel.selectedDayCurrentTime,
             showsCurrentTimeWhenEmpty: viewModel.isViewingToday,
+            highlightedSessionIDs: viewModel.isViewingToday ? [] : viewModel.highlightedReviewSessionIDs,
             selectedSession: viewModel.selectedSession,
             onSelectSession: viewModel.openSessionEditor,
             onClearSelection: viewModel.clearSessionSelection
@@ -391,7 +404,13 @@ struct ContentView: View {
             } else {
                 HStack(spacing: 34) {
                     Button {
+                        let wasRunning = viewModel.state == .running
                         viewModel.togglePauseResume()
+                        if wasRunning {
+                            switchToDayPage()
+                        } else {
+                            switchToHourlyPage()
+                        }
                     } label: {
                         Image(systemName: viewModel.state == .running ? "pause.fill" : "play.fill")
                             .font(.system(size: 34, weight: .bold))
@@ -403,6 +422,7 @@ struct ContentView: View {
 
                     Button {
                         viewModel.stopAndSave()
+                        switchToDayPage()
                     } label: {
                         Image(systemName: "stop.fill")
                             .font(.system(size: 34, weight: .bold))
@@ -425,9 +445,7 @@ struct ContentView: View {
     private var startTrackingButton: some View {
         Button {
             if viewModel.prepareToStart() {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    selectedTimelinePage = 1
-                }
+                switchToHourlyPage()
             }
         } label: {
             Image(systemName: "play.fill")
@@ -484,9 +502,7 @@ struct ContentView: View {
                                 allowsLongPress: viewModel.isViewingToday,
                                 onTap: {
                                     if viewModel.handleTaskChipTap(task) {
-                                        withAnimation(.easeInOut(duration: 0.2)) {
-                                            selectedTimelinePage = 1
-                                        }
+                                        switchToHourlyPage()
                                         scrollToFirstTask(with: proxy)
                                     }
                                 },
@@ -531,6 +547,22 @@ struct ContentView: View {
             withAnimation(.easeInOut(duration: 0.2)) {
                 proxy.scrollTo(taskID, anchor: .leading)
             }
+        }
+    }
+
+    private func switchToHourlyPage() {
+        guard viewModel.isViewingToday else { return }
+
+        withAnimation(.easeInOut(duration: 0.2)) {
+            selectedTimelinePage = 1
+        }
+    }
+
+    private func switchToDayPage() {
+        guard viewModel.isViewingToday else { return }
+
+        withAnimation(.easeInOut(duration: 0.2)) {
+            selectedTimelinePage = 0
         }
     }
 
@@ -603,6 +635,7 @@ struct ContentView: View {
             displayElapsed: viewModel.selectedTaskDisplayElapsed,
             currentTime: viewModel.selectedDayCurrentTime,
             showsCurrentTimeWhenEmpty: viewModel.isViewingToday,
+            highlightedSessionIDs: [],
             selectedSession: viewModel.selectedSession,
             onSelectSession: { _ in },
             onClearSelection: { }
@@ -738,7 +771,7 @@ private struct TaskPickerView: View {
         NavigationStack {
             List {
                 if tasks.isEmpty {
-                    Text("No tasks yet")
+                    Text("No activities yet")
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(tasks) { task in
@@ -762,7 +795,7 @@ private struct TaskPickerView: View {
                     }
                 }
             }
-            .navigationTitle("Choose a task")
+            .navigationTitle("Choose Activity")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", action: onCancel)

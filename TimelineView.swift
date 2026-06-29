@@ -16,6 +16,7 @@ struct TimelineView: View {
     var displayElapsed: TimeInterval
     var currentTime: Date
     var showsCurrentTimeWhenEmpty: Bool = true
+    var highlightedSessionIDs: Set<UUID> = []
     var selectedSession: SessionItem?
     var onSelectSession: (SessionItem) -> Void
     var onClearSelection: () -> Void
@@ -66,13 +67,15 @@ struct TimelineView: View {
                 }
 
             ForEach(visibleSessions) { session in
+                let isEmphasized = isSessionEmphasized(session)
+
                 RingSectorShape(
                     startAngle: .degrees(angleForSession(session) - 90),
                     endAngle: .degrees(angleForSession(session) + max(degreesForSession(session), 0.5) - 90),
-                    outerRadius: selectedSessionID == session.id ? outerRadius + 5 : outerRadius,
-                    innerRadius: selectedSessionID == session.id ? innerRadius - 5 : innerRadius
+                    outerRadius: isEmphasized ? outerRadius + 5 : outerRadius,
+                    innerRadius: isEmphasized ? innerRadius - 5 : innerRadius
                 )
-                .fill(session.color.color.opacity(selectedSessionID == session.id ? 1 : 0.75))
+                .fill(session.color.color.opacity(isEmphasized ? 1 : 0.75))
                 .contentShape(
                     RingSectorShape(
                         startAngle: .degrees(angleForSession(session) - 90),
@@ -120,40 +123,22 @@ struct TimelineView: View {
                 currentTimeMarker
             }
 
-            if scope == .day {
-                VStack(spacing: 10) {
-                    if let selectedSession {
-                        Text(selectedSession.taskName)
-                            .font(.system(size: 22, weight: .bold))
-                            .foregroundStyle(.primary)
-                            .multilineTextAlignment(.center)
-                            .lineLimit(2)
-
-                        Text(selectedSession.formattedDuration)
-                            .font(.system(size: 34, weight: .bold))
-                            .foregroundStyle(.primary)
-                    } else if task != nil, state != .stopped {
-                        centerElapsedTimerText
-                    } else if let task {
-                        Text(task.name)
-                            .font(.system(size: 24, weight: .bold))
-                            .foregroundStyle(.primary)
-                            .multilineTextAlignment(.center)
-                            .lineLimit(2)
-
-                        Text(TimeCircleFormat.centerTimer(Int(displayElapsed)))
-                            .font(.system(size: 38, weight: .bold))
-                            .foregroundStyle(.primary)
-                    } else {
-                        if showsCurrentTimeWhenEmpty {
-                            centerCurrentTimeText
-                        }
-                    }
-                }
+            centerDisplay
                 .frame(width: 180)
-            }
         }
         .frame(width: size, height: size)
+    }
+
+    @ViewBuilder
+    private var centerDisplay: some View {
+        switch scope {
+        case .day:
+            if showsCurrentTimeWhenEmpty {
+                centerCurrentTimeText
+            }
+        case .hour:
+            centerElapsedTimerText
+        }
     }
 
     private var centerCurrentTimeText: some View {
@@ -233,6 +218,10 @@ struct TimelineView: View {
         sessions.filter { isSessionVisible($0) }
     }
 
+    private func isSessionEmphasized(_ session: SessionItem) -> Bool {
+        selectedSessionID == session.id || highlightedSessionIDs.contains(session.id)
+    }
+
     private var tickIndices: [Int] {
         switch scope {
         case .day:
@@ -293,17 +282,26 @@ struct TimelineView: View {
             fontSize = tick % 4 == 0 ? 24 : 12
             fontWeight = tick % 4 == 0 ? .bold : .medium
         case .hour:
-            fontSize = tick == 0 ? 40 : 28
+            fontSize = tick == 0 ? 40 : 20
             fontWeight = tick == 0 ? .heavy : .bold
         }
 
         return Text(label)
             .font(.system(size: fontSize, weight: fontWeight))
-            .foregroundStyle(.primary)
+            .foregroundStyle(labelColor(for: tick))
             .position(
                 x: size / 2 + cos(radians) * radius,
                 y: size / 2 + sin(radians) * radius
             )
+    }
+
+    private func labelColor(for tick: Int) -> Color {
+        switch scope {
+        case .day:
+            return .primary
+        case .hour:
+            return tick == 0 ? .primary : .secondary
+        }
     }
 
     private var currentTimeMarker: some View {

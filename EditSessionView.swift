@@ -22,9 +22,9 @@ struct EditSessionView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Task") {
-                    TextField("Task name", text: $taskName)
-                    ColorPicker("Task color", selection: $taskColor)
+                Section("Activity") {
+                    TextField("Activity title", text: $taskName)
+                    ColorPicker("Activity color", selection: $taskColor)
                 }
 
                 Section("Time") {

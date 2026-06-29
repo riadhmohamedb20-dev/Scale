@@ -4,6 +4,7 @@ struct EditTaskView: View {
     @Binding var taskName: String
     @Binding var taskColor: Color
     @Binding var taskDescription: String
+    @Binding var taskType: ActivityType
 
     var onDone: () -> Void
     var onDelete: () -> Void
@@ -13,15 +14,30 @@ struct EditTaskView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Task") {
-                    TextField("Task name", text: $taskName)
-                    ColorPicker("Task color", selection: $taskColor)
+                Section("Activity") {
+                    TextField("Activity title", text: $taskName)
+                    ColorPicker("Activity color", selection: $taskColor)
+                }
+
+                Section {
+                    Picker("Activity type", selection: $taskType) {
+                        ForEach(ActivityType.allCases) { type in
+                            Text(type.title)
+                                .tag(type)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .controlSize(.large)
+                    .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 2, trailing: 0))
+                    .listRowBackground(Color.clear)
+                } header: {
+                    Text("Activity type")
                 }
 
                 Section("Description") {
                     ZStack(alignment: .topLeading) {
                         if taskDescription.isEmpty {
-                            Text("What does this task include?")
+                            Text("What does this activity include?")
                                 .foregroundStyle(.secondary)
                                 .padding(.top, 8)
                                 .padding(.leading, 5)
@@ -36,11 +52,11 @@ struct EditTaskView: View {
                     Button(role: .destructive) {
                         isShowingDeleteConfirmation = true
                     } label: {
-                        Text("Delete Task")
+                        Text("Delete Activity")
                     }
                 }
             }
-            .navigationTitle("Edit Task")
+            .navigationTitle("Edit Activity")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
@@ -48,14 +64,14 @@ struct EditTaskView: View {
                     }
                 }
             }
-            .alert("Delete this task?", isPresented: $isShowingDeleteConfirmation) {
-                Button("Delete Task", role: .destructive) {
+            .alert("Delete this activity?", isPresented: $isShowingDeleteConfirmation) {
+                Button("Delete Activity", role: .destructive) {
                     onDelete()
                 }
 
                 Button("Cancel", role: .cancel) { }
             } message: {
-                Text("This will remove the task, but existing completed sessions should remain.")
+                Text("This will remove the activity, but existing completed sessions should remain.")
             }
         }
     }

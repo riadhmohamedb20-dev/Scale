@@ -58,12 +58,20 @@ struct TaskItem: Identifiable, Equatable, Codable {
     var name: String
     var color: StoredColor
     var description: String
+    var activityType: ActivityType
 
-    init(id: UUID = UUID(), name: String, color: StoredColor, description: String = "") {
+    init(
+        id: UUID = UUID(),
+        name: String,
+        color: StoredColor,
+        description: String = "",
+        activityType: ActivityType = .pain
+    ) {
         self.id = id
         self.name = name
         self.color = color
         self.description = description
+        self.activityType = activityType
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -71,6 +79,7 @@ struct TaskItem: Identifiable, Equatable, Codable {
         case name
         case color
         case description
+        case activityType
     }
 
     init(from decoder: Decoder) throws {
@@ -80,6 +89,28 @@ struct TaskItem: Identifiable, Equatable, Codable {
         name = try container.decode(String.self, forKey: .name)
         color = try container.decode(StoredColor.self, forKey: .color)
         description = try container.decodeIfPresent(String.self, forKey: .description) ?? ""
+        activityType = try container.decodeIfPresent(ActivityType.self, forKey: .activityType) ?? .pain
+    }
+}
+
+enum ActivityType: String, CaseIterable, Identifiable, Codable {
+    case pain
+    case pleasure
+    case rest
+
+    var id: String {
+        rawValue
+    }
+
+    var title: String {
+        switch self {
+        case .pain:
+            return "Pain"
+        case .pleasure:
+            return "Pleasure"
+        case .rest:
+            return "Rest"
+        }
     }
 }
 
@@ -139,6 +170,43 @@ struct SessionItem: Identifiable, Equatable, Codable {
     var color: StoredColor
     var startTime: Date
     var duration: TimeInterval
+    var activityType: ActivityType
+
+    init(
+        id: UUID = UUID(),
+        taskName: String,
+        color: StoredColor,
+        startTime: Date,
+        duration: TimeInterval,
+        activityType: ActivityType = .pain
+    ) {
+        self.id = id
+        self.taskName = taskName
+        self.color = color
+        self.startTime = startTime
+        self.duration = duration
+        self.activityType = activityType
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case taskName
+        case color
+        case startTime
+        case duration
+        case activityType
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        taskName = try container.decode(String.self, forKey: .taskName)
+        color = try container.decode(StoredColor.self, forKey: .color)
+        startTime = try container.decode(Date.self, forKey: .startTime)
+        duration = try container.decode(TimeInterval.self, forKey: .duration)
+        activityType = try container.decodeIfPresent(ActivityType.self, forKey: .activityType) ?? .pain
+    }
 
     var endTime: Date {
         startTime.addingTimeInterval(duration)
@@ -164,6 +232,21 @@ struct TaskTimeSummary: Identifiable, Equatable {
 
     var formattedDuration: String {
         TimeCircleFormat.elapsed(Int(duration))
+    }
+}
+
+struct ActivityTypeTimeSummary: Identifiable, Equatable {
+    var activityType: ActivityType
+    var duration: TimeInterval
+    var totalDuration: TimeInterval
+
+    var id: ActivityType {
+        activityType
+    }
+
+    var percentage: Int {
+        guard totalDuration > 0 else { return 0 }
+        return Int((duration / totalDuration * 100).rounded())
     }
 }
 
