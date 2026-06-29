@@ -94,9 +94,9 @@ struct TaskItem: Identifiable, Equatable, Codable {
 }
 
 enum ActivityType: String, CaseIterable, Identifiable, Codable {
-    case pain
     case pleasure
-    case rest
+    case neutral
+    case pain
 
     var id: String {
         rawValue
@@ -104,12 +104,28 @@ enum ActivityType: String, CaseIterable, Identifiable, Codable {
 
     var title: String {
         switch self {
-        case .pain:
-            return "Pain"
         case .pleasure:
             return "Pleasure"
-        case .rest:
-            return "Rest"
+        case .neutral:
+            return "Neutral"
+        case .pain:
+            return "Pain"
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+
+        switch rawValue {
+        case Self.pleasure.rawValue:
+            self = .pleasure
+        case Self.neutral.rawValue, "rest":
+            self = .neutral
+        case Self.pain.rawValue:
+            self = .pain
+        default:
+            self = .pain
         }
     }
 }

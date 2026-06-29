@@ -15,7 +15,7 @@ struct ContentView: View {
     @State private var isDatePillPressed = false
 
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
-    private let taskChipLeadingSpacerID = "task-chip-leading-spacer"
+    private let activityChipLeadingSpacerID = "activityChipLeadingSpacer"
 
     private var appearanceMode: AppAppearanceMode {
         AppAppearanceMode(rawValue: appearanceModeRaw) ?? .system
@@ -476,7 +476,7 @@ struct ContentView: View {
                 HStack(spacing: 0) {
                     Color.clear
                         .frame(width: 16)
-                        .id(taskChipLeadingSpacerID)
+                        .id(activityChipLeadingSpacerID)
 
                     HStack(spacing: 10) {
                         if !viewModel.isViewingToday {
@@ -513,7 +513,6 @@ struct ContentView: View {
                                     else { return }
 
                                     viewModel.editTask(editingTask)
-                                    scrollToTask(task.id, with: proxy)
                                 }
                             )
                             .id(task.id)
@@ -531,21 +530,18 @@ struct ContentView: View {
             .onChange(of: viewModel.taskChipsForSelectedDay.map(\.id)) { _, _ in
                 scrollToFirstTask(with: proxy)
             }
+            .onChange(of: viewModel.isEditingTask) { wasEditing, isEditing in
+                if wasEditing && !isEditing {
+                    scrollToFirstTask(with: proxy)
+                }
+            }
         }
     }
 
     private func scrollToFirstTask(with proxy: ScrollViewProxy) {
         DispatchQueue.main.async {
             withAnimation(.easeInOut(duration: 0.2)) {
-                proxy.scrollTo(taskChipLeadingSpacerID, anchor: .leading)
-            }
-        }
-    }
-
-    private func scrollToTask(_ taskID: String, with proxy: ScrollViewProxy) {
-        DispatchQueue.main.async {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                proxy.scrollTo(taskID, anchor: .leading)
+                proxy.scrollTo(activityChipLeadingSpacerID, anchor: .leading)
             }
         }
     }
