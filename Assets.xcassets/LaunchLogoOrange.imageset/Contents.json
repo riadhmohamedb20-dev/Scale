@@ -1,0 +1,12 @@
+{
+  "images" : [
+    {
+      "filename" : "logo_orange.png",
+      "idiom" : "universal"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}
