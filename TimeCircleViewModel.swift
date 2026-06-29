@@ -5,13 +5,17 @@ final class TimeCircleViewModel: ObservableObject {
     @Published var tasks: [TaskItem] = []
     @Published var sessions: [SessionItem] = []
     @Published var selectedTaskID: UUID?
+    @Published var selectedReviewTaskName: String?
     @Published var selectedSessionID: UUID?
     @Published var editingTaskID: UUID?
     @Published var editingSessionID: UUID?
     @Published var isAddingTask = false
     @Published var isShowingTaskPicker = false
+    @Published var isShowingManualSessionTaskPicker = false
+    @Published var isAddingManualSession = false
     @Published var newTaskName = ""
     @Published var newTaskColor: Color = StoredColor.blue.color
+    @Published var newTaskDescription = ""
     @Published var editingSessionTaskName = ""
     @Published var editingSessionTaskColor: Color = StoredColor.blue.color
     @Published var editingSessionStartTime = Date()
@@ -57,12 +61,33 @@ final class TimeCircleViewModel: ObservableObject {
         editingTask?.color.color ?? .gray
     }
 
+    var editingTaskDescription: String {
+        editingTask?.description ?? ""
+    }
+
     var isEditingTask: Bool {
         editingTask != nil
     }
 
     var isEditingSession: Bool {
-        editingSession != nil
+        editingSession != nil || isAddingManualSession
+    }
+
+    var editingSessionTitle: String {
+        isAddingManualSession ? "Add Session" : "Edit Session"
+    }
+
+    var shouldShowEditingSessionDeleteButton: Bool {
+        !isAddingManualSession
+    }
+
+    var editingSessionDateRange: ClosedRange<Date>? {
+        guard isAddingManualSession,
+              let dayInterval = Calendar.current.dateInterval(of: .day, for: selectedDay),
+              let latestDate = Calendar.current.date(byAdding: .minute, value: -1, to: dayInterval.end)
+        else { return nil }
+
+        return dayInterval.start...latestDate
     }
 
     var currentStartTime: Date? {
@@ -112,6 +137,42 @@ final class TimeCircleViewModel: ObservableObject {
             .map(\.element)
     }
 
+    var taskChipsForSelectedDay: [TaskChipItem] {
+        if isViewingToday {
+            return orderedTasksForSelectedDay.map { task in
+                TaskChipItem(
+                    id: task.id.uuidString,
+                    taskID: task.id,
+                    name: task.name,
+                    color: task.color
+                )
+            }
+        }
+
+        let groupedSessions = Dictionary(grouping: selectedDaySessions, by: \.taskName)
+
+        return groupedSessions.map { taskName, sessions in
+            let sortedSessions = sessions.sorted { $0.startTime < $1.startTime }
+            return (
+                chip: TaskChipItem(
+                    id: taskName,
+                    taskID: nil,
+                    name: taskName,
+                    color: sortedSessions.last?.color ?? .blue
+                ),
+                latestEnd: sortedSessions.last?.endTime ?? selectedDay
+            )
+        }
+        .sorted {
+            if $0.latestEnd == $1.latestEnd {
+                return $0.chip.name < $1.chip.name
+            }
+
+            return $0.latestEnd > $1.latestEnd
+        }
+        .map(\.chip)
+    }
+
     var selectedTaskTrackedTimeForSelectedDay: TimeInterval {
         guard let selectedTask else { return 0 }
 
@@ -131,6 +192,31 @@ final class TimeCircleViewModel: ObservableObject {
         }
 
         return selectedTaskTrackedTimeForSelectedDay + elapsed
+    }
+
+    var timelineDisplayTask: TaskItem? {
+        if isViewingToday {
+            return state == .stopped ? nil : selectedTask
+        }
+
+        guard let selectedReviewTaskName,
+              let latestSession = selectedDaySessions
+                .filter({ $0.taskName == selectedReviewTaskName })
+                .sorted(by: { $0.startTime < $1.startTime })
+                .last
+        else { return nil }
+
+        return TaskItem(name: selectedReviewTaskName, color: latestSession.color)
+    }
+
+    var timelineDisplayElapsed: TimeInterval {
+        guard !isViewingToday, let selectedReviewTaskName else {
+            return selectedTaskDisplayElapsed
+        }
+
+        return selectedDaySessions
+            .filter { $0.taskName == selectedReviewTaskName }
+            .reduce(0) { $0 + $1.duration }
     }
 
     var historySummaries: [DayHistorySummary] {
@@ -222,8 +308,41 @@ final class TimeCircleViewModel: ObservableObject {
 
     func selectTask(_ task: TaskItem) {
         selectedTaskID = task.id
+        selectedReviewTaskName = nil
         selectedSessionID = nil
         resetCurrentTracking()
+    }
+
+    func startTaskFromChip(_ task: TaskItem) -> Bool {
+        guard state == .stopped, isViewingToday else { return false }
+
+        moveTaskToFront(task.id)
+        selectedTaskID = task.id
+        selectedReviewTaskName = nil
+        selectedSessionID = nil
+        start()
+        return true
+    }
+
+    func handleTaskChipTap(_ chip: TaskChipItem) -> Bool {
+        if isViewingToday {
+            guard let taskID = chip.taskID,
+                  let task = tasks.first(where: { $0.id == taskID })
+            else { return false }
+
+            return startTaskFromChip(task)
+        }
+
+        selectReviewTask(named: chip.name)
+        return false
+    }
+
+    func isTaskChipActive(_ chip: TaskChipItem) -> Bool {
+        if isViewingToday {
+            return selectedTaskID?.uuidString == chip.id && state != .stopped
+        }
+
+        return selectedReviewTaskName == chip.name
     }
 
     func clearSelectedTaskFromBackgroundTap() {
@@ -236,11 +355,19 @@ final class TimeCircleViewModel: ObservableObject {
         guard state == .stopped else { return }
 
         selectedTaskID = nil
+        selectedReviewTaskName = nil
+        selectedSessionID = nil
+    }
+
+    func selectReviewTask(named taskName: String) {
+        guard !isViewingToday else { return }
+
+        selectedReviewTaskName = taskName
+        selectedTaskID = nil
         selectedSessionID = nil
     }
 
     func editTask(_ task: TaskItem) {
-        selectTask(task)
         editingTaskID = task.id
     }
 
@@ -252,6 +379,7 @@ final class TimeCircleViewModel: ObservableObject {
         guard let originalSession = sessions.first(where: { $0.id == session.id }) else { return }
 
         selectedSessionID = session.id
+        selectedReviewTaskName = nil
         editingSessionID = session.id
         editingSessionTaskName = originalSession.taskName
         editingSessionTaskColor = originalSession.color.color
@@ -261,14 +389,21 @@ final class TimeCircleViewModel: ObservableObject {
 
     func closeSessionEditor() {
         editingSessionID = nil
+        isAddingManualSession = false
 
         guard state == .stopped else { return }
 
         selectedSessionID = nil
         selectedTaskID = nil
+        selectedReviewTaskName = nil
     }
 
     func saveEditingSession() {
+        if isAddingManualSession {
+            saveManualSession()
+            return
+        }
+
         guard let editingSessionIndex else {
             closeSessionEditor()
             return
@@ -286,11 +421,33 @@ final class TimeCircleViewModel: ObservableObject {
         closeSessionEditor()
     }
 
+    private func saveManualSession() {
+        let trimmedName = editingSessionTaskName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+        guard editingSessionEndTime >= editingSessionStartTime else { return }
+
+        sessions.append(
+            SessionItem(
+                taskName: trimmedName,
+                color: StoredColor(from: editingSessionTaskColor),
+                startTime: editingSessionStartTime,
+                duration: editingSessionEndTime.timeIntervalSince(editingSessionStartTime)
+            )
+        )
+
+        selectedReviewTaskName = trimmedName
+        selectedSessionID = nil
+        saveData()
+        editingSessionID = nil
+        isAddingManualSession = false
+    }
+
     func openAddTaskSheet() {
         guard isViewingToday else { return }
 
         newTaskName = ""
         newTaskColor = randomTaskColor().color
+        newTaskDescription = ""
         isAddingTask = true
     }
 
@@ -308,6 +465,33 @@ final class TimeCircleViewModel: ObservableObject {
         isShowingTaskPicker = false
     }
 
+    func openManualSessionTaskPicker() {
+        guard !isViewingToday else { return }
+
+        isShowingManualSessionTaskPicker = true
+    }
+
+    func closeManualSessionTaskPicker() {
+        isShowingManualSessionTaskPicker = false
+    }
+
+    func openManualSessionEditor(for task: TaskItem) {
+        guard !isViewingToday else { return }
+
+        let dayStart = Calendar.current.startOfDay(for: selectedDay)
+        let defaultEnd = Calendar.current.date(byAdding: .hour, value: 1, to: dayStart) ?? dayStart
+
+        editingSessionID = nil
+        selectedSessionID = nil
+        selectedReviewTaskName = nil
+        editingSessionTaskName = task.name
+        editingSessionTaskColor = task.color.color
+        editingSessionStartTime = dayStart
+        editingSessionEndTime = defaultEnd
+        isAddingManualSession = true
+        closeManualSessionTaskPicker()
+    }
+
     func prepareToStart() -> Bool {
         guard state == .stopped else { return false }
         guard isViewingToday else { return false }
@@ -323,7 +507,11 @@ final class TimeCircleViewModel: ObservableObject {
     func selectTaskAndStart(_ task: TaskItem) -> Bool {
         guard state == .stopped, isViewingToday else { return false }
 
-        selectTask(task)
+        moveTaskToFront(task.id)
+        selectedTaskID = task.id
+        selectedReviewTaskName = nil
+        selectedSessionID = nil
+        resetCurrentTracking()
         closeTaskPicker()
         start()
         return true
@@ -348,13 +536,27 @@ final class TimeCircleViewModel: ObservableObject {
     func selectHistoryDay(_ day: Date) {
         selectedDay = Calendar.current.startOfDay(for: day)
         selectedSessionID = nil
+        selectedReviewTaskName = nil
         closeHistoryPicker()
     }
 
     func selectToday() {
         selectedDay = Calendar.current.startOfDay(for: now)
         selectedSessionID = nil
+        selectedReviewTaskName = nil
         closeHistoryPicker()
+    }
+
+    func moveSelectedDay(by dayOffset: Int) {
+        guard let proposedDay = Calendar.current.date(byAdding: .day, value: dayOffset, to: selectedDay) else {
+            return
+        }
+
+        let today = Calendar.current.startOfDay(for: now)
+        let clampedDay = min(Calendar.current.startOfDay(for: proposedDay), today)
+        selectedDay = clampedDay
+        selectedSessionID = nil
+        selectedReviewTaskName = nil
     }
 
     func updateEditingTaskName(_ name: String) {
@@ -368,6 +570,13 @@ final class TimeCircleViewModel: ObservableObject {
         guard let editingIndex else { return }
 
         tasks[editingIndex].color = StoredColor(from: color)
+        saveData()
+    }
+
+    func updateEditingTaskDescription(_ description: String) {
+        guard let editingIndex else { return }
+
+        tasks[editingIndex].description = description
         saveData()
     }
 
@@ -422,19 +631,29 @@ final class TimeCircleViewModel: ObservableObject {
 
         saveData()
         resetCurrentTracking()
+        selectedTaskID = nil
+        selectedReviewTaskName = nil
+        selectedSessionID = nil
     }
 
     func addTask() {
         let trimmed = newTaskName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        let task = TaskItem(name: trimmed, color: StoredColor(from: newTaskColor))
+        let trimmedDescription = newTaskDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let task = TaskItem(
+            name: trimmed,
+            color: StoredColor(from: newTaskColor),
+            description: trimmedDescription
+        )
 
-        tasks.append(task)
-        selectedTaskID = task.id
+        tasks.insert(task, at: 0)
+        selectedTaskID = nil
+        selectedReviewTaskName = nil
         selectedSessionID = nil
         newTaskName = ""
         newTaskColor = randomTaskColor().color
+        newTaskDescription = ""
         resetCurrentTracking()
         saveData()
         closeAddTaskSheet()
@@ -589,6 +808,14 @@ final class TimeCircleViewModel: ObservableObject {
             self.selectedTaskID = nil
             resetCurrentTracking()
         }
+    }
+
+    private func moveTaskToFront(_ taskID: UUID) {
+        guard let index = tasks.firstIndex(where: { $0.id == taskID }), index != 0 else { return }
+
+        let task = tasks.remove(at: index)
+        tasks.insert(task, at: 0)
+        saveData()
     }
 
     private func saveData() {

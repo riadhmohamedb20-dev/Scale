@@ -129,7 +129,7 @@ struct MonthlyHeatmapView: View {
 
     private func dayButton(for day: Date, kind: HeatmapDay.Kind) -> some View {
         Button {
-            if kind == .currentMonth {
+            if kind == .currentMonth && !isFutureDay(day) {
                 select(day)
             }
         } label: {
@@ -146,7 +146,7 @@ struct MonthlyHeatmapView: View {
                 )
         }
         .buttonStyle(.plain)
-        .disabled(kind != .currentMonth)
+        .disabled(kind != .currentMonth || isFutureDay(day))
     }
 
     private var legendCard: some View {
@@ -286,6 +286,10 @@ struct MonthlyHeatmapView: View {
             return inactiveColor
         }
 
+        if isFutureDay(day) {
+            return inactiveColor.opacity(0.42)
+        }
+
         if Calendar.current.isDateInToday(day) {
             return todayColor
         }
@@ -307,6 +311,10 @@ struct MonthlyHeatmapView: View {
     private func textColor(for day: Date, kind: HeatmapDay.Kind) -> Color {
         guard kind == .currentMonth else {
             return .clear
+        }
+
+        if isFutureDay(day) {
+            return .secondary.opacity(0.42)
         }
 
         if Calendar.current.isDateInToday(day) {
@@ -349,7 +357,11 @@ struct MonthlyHeatmapView: View {
     }
 
     private func shouldShowSelectionStroke(for day: Date, kind: HeatmapDay.Kind) -> Bool {
-        kind == .currentMonth && isSelected(day) && !Calendar.current.isDateInToday(day)
+        kind == .currentMonth && !isFutureDay(day) && isSelected(day) && !Calendar.current.isDateInToday(day)
+    }
+
+    private func isFutureDay(_ day: Date) -> Bool {
+        Calendar.current.startOfDay(for: day) > Calendar.current.startOfDay(for: Date())
     }
 
     private func moveMonth(by value: Int) {
@@ -359,6 +371,8 @@ struct MonthlyHeatmapView: View {
     }
 
     private func select(_ day: Date) {
+        guard !isFutureDay(day) else { return }
+
         withAnimation(.easeInOut(duration: 0.25)) {
             if Calendar.current.isDateInToday(day) {
                 onSelectToday()

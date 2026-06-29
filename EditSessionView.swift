@@ -6,6 +6,9 @@ struct EditSessionView: View {
     @Binding var startTime: Date
     @Binding var endTime: Date
 
+    var title = "Edit Session"
+    var showsDeleteButton = true
+    var dateRange: ClosedRange<Date>?
     var onSave: () -> Void
     var onDelete: () -> Void
 
@@ -43,15 +46,17 @@ struct EditSessionView: View {
                     }
                 }
 
-                Section {
-                    Button(role: .destructive) {
-                        isShowingDeleteConfirmation = true
-                    } label: {
-                        Text("Delete Session")
+                if showsDeleteButton {
+                    Section {
+                        Button(role: .destructive) {
+                            isShowingDeleteConfirmation = true
+                        } label: {
+                            Text("Delete Session")
+                        }
                     }
                 }
             }
-            .navigationTitle("Edit Session")
+            .navigationTitle(title)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
@@ -77,9 +82,15 @@ struct EditSessionView: View {
             Text(label)
                 .frame(width: timeLabelWidth, alignment: .leading)
 
-            DatePicker("", selection: selection, displayedComponents: .date)
-                .labelsHidden()
-                .frame(width: dateColumnWidth, alignment: .leading)
+            if let dateRange {
+                DatePicker("", selection: selection, in: dateRange, displayedComponents: .date)
+                    .labelsHidden()
+                    .frame(width: dateColumnWidth, alignment: .leading)
+            } else {
+                DatePicker("", selection: selection, displayedComponents: .date)
+                    .labelsHidden()
+                    .frame(width: dateColumnWidth, alignment: .leading)
+            }
 
             DatePicker("", selection: selection, displayedComponents: .hourAndMinute)
                 .labelsHidden()

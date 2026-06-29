@@ -57,6 +57,37 @@ struct TaskItem: Identifiable, Equatable, Codable {
     var id = UUID()
     var name: String
     var color: StoredColor
+    var description: String
+
+    init(id: UUID = UUID(), name: String, color: StoredColor, description: String = "") {
+        self.id = id
+        self.name = name
+        self.color = color
+        self.description = description
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case color
+        case description
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try container.decode(String.self, forKey: .name)
+        color = try container.decode(StoredColor.self, forKey: .color)
+        description = try container.decodeIfPresent(String.self, forKey: .description) ?? ""
+    }
+}
+
+struct TaskChipItem: Identifiable, Equatable {
+    var id: String
+    var taskID: UUID?
+    var name: String
+    var color: StoredColor
 }
 
 enum AppAppearanceMode: String, CaseIterable, Identifiable {
@@ -177,6 +208,27 @@ enum TimeCircleFormat {
         return formatter.string(from: date)
     }
 
+    static func twentyFourHourClock(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
+    }
+
+    static func seconds(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "ss"
+        return formatter.string(from: date)
+    }
+
+    static func hourNumber(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH"
+        return formatter.string(from: date)
+    }
+
     static func day(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "d MMM yyyy"
@@ -212,6 +264,19 @@ enum TimeCircleFormat {
         } else {
             return String(format: "%02d:%02d", m, s)
         }
+    }
+
+    static func elapsedHoursMinutes(_ seconds: Int) -> String {
+        let clampedSeconds = max(seconds, 0)
+        let h = clampedSeconds / 3600
+        let m = (clampedSeconds % 3600) / 60
+        return String(format: "%02d:%02d", h, m)
+    }
+
+    static func elapsedSeconds(_ seconds: Int) -> String {
+        let clampedSeconds = max(seconds, 0)
+        let s = clampedSeconds % 60
+        return String(format: "%02d", s)
     }
 
     static func readable(_ seconds: Int) -> String {

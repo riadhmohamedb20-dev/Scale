@@ -116,42 +116,76 @@ struct TimelineView: View {
                 timelineLabel(tick)
             }
 
-            if shouldShowCurrentTimeLabel {
-                currentTimeLabel
+            if shouldShowCurrentTimeMarker {
+                currentTimeMarker
             }
 
-            VStack(spacing: 10) {
-                if let selectedSession {
-                    Text(selectedSession.taskName)
-                        .font(.system(size: 22, weight: .bold))
-                        .foregroundStyle(.primary)
-                        .multilineTextAlignment(.center)
-                        .lineLimit(2)
+            if scope == .day {
+                VStack(spacing: 10) {
+                    if let selectedSession {
+                        Text(selectedSession.taskName)
+                            .font(.system(size: 22, weight: .bold))
+                            .foregroundStyle(.primary)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
 
-                    Text(selectedSession.formattedDuration)
-                        .font(.system(size: 34, weight: .bold))
-                        .foregroundStyle(.primary)
-                } else if let task {
-                    Text(task.name)
-                        .font(.system(size: 24, weight: .bold))
-                        .foregroundStyle(.primary)
-                        .multilineTextAlignment(.center)
-                        .lineLimit(2)
+                        Text(selectedSession.formattedDuration)
+                            .font(.system(size: 34, weight: .bold))
+                            .foregroundStyle(.primary)
+                    } else if task != nil, state != .stopped {
+                        centerElapsedTimerText
+                    } else if let task {
+                        Text(task.name)
+                            .font(.system(size: 24, weight: .bold))
+                            .foregroundStyle(.primary)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
 
-                    Text(TimeCircleFormat.centerTimer(Int(displayElapsed)))
-                        .font(.system(size: 38, weight: .bold))
-                        .foregroundStyle(.primary)
-                } else {
-                    if showsCurrentTimeWhenEmpty {
-                        Text(TimeCircleFormat.clock(currentTime))
+                        Text(TimeCircleFormat.centerTimer(Int(displayElapsed)))
                             .font(.system(size: 38, weight: .bold))
                             .foregroundStyle(.primary)
+                    } else {
+                        if showsCurrentTimeWhenEmpty {
+                            centerCurrentTimeText
+                        }
                     }
                 }
+                .frame(width: 180)
             }
-            .frame(width: 180)
         }
         .frame(width: size, height: size)
+    }
+
+    private var centerCurrentTimeText: some View {
+        VStack(spacing: 2) {
+            Text(TimeCircleFormat.twentyFourHourClock(currentTime))
+                .font(.system(size: 38, weight: .bold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .allowsTightening(true)
+
+            Text(TimeCircleFormat.seconds(currentTime))
+                .font(.system(size: 18, weight: .semibold).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+
+    private var centerElapsedTimerText: some View {
+        VStack(spacing: 2) {
+            Text(TimeCircleFormat.elapsedHoursMinutes(Int(displayElapsed)))
+                .font(.system(size: 38, weight: .bold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .allowsTightening(true)
+
+            Text(TimeCircleFormat.elapsedSeconds(Int(displayElapsed)))
+                .font(.system(size: 18, weight: .semibold).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
     }
 
     private var isZoomed: Bool {
@@ -242,8 +276,8 @@ struct TimelineView: View {
         Calendar.current.dateInterval(of: .hour, for: currentTime)
     }
 
-    private var shouldShowCurrentTimeLabel: Bool {
-        task != nil || selectedSession != nil || state != .stopped
+    private var shouldShowCurrentTimeMarker: Bool {
+        showsCurrentTimeWhenEmpty
     }
 
     private func timelineLabel(_ tick: Int) -> some View {
@@ -259,8 +293,8 @@ struct TimelineView: View {
             fontSize = tick % 4 == 0 ? 24 : 12
             fontWeight = tick % 4 == 0 ? .bold : .medium
         case .hour:
-            fontSize = tick == 0 || tick == 6 ? 22 : 16
-            fontWeight = .bold
+            fontSize = tick == 0 ? 40 : 28
+            fontWeight = tick == 0 ? .heavy : .bold
         }
 
         return Text(label)
@@ -272,16 +306,17 @@ struct TimelineView: View {
             )
     }
 
-    private var currentTimeLabel: some View {
+    private var currentTimeMarker: some View {
         let angle = angleForDate(currentTime)
         let radius: CGFloat = 128
         let radians = (angle - 90) * .pi / 180
+        let iconSize: CGFloat = scope == .hour ? 18 : 12
+        let frameSize: CGFloat = scope == .hour ? 30 : 22
 
-        return Text(TimeCircleFormat.clock(currentTime))
-            .font(.system(size: 12, weight: .bold))
+        return Image(systemName: "person.fill")
+            .font(.system(size: iconSize, weight: .semibold))
             .foregroundStyle(.primary)
-            .padding(.horizontal, 4)
-            .background(.background)
+            .frame(width: frameSize, height: frameSize)
             .position(
                 x: size / 2 + cos(radians) * radius,
                 y: size / 2 + sin(radians) * radius
@@ -356,7 +391,7 @@ struct TimelineView: View {
         case .day:
             return "\(tick)"
         case .hour:
-            return tick == 0 ? "0/60" : "\(tick * 5)"
+            return tick == 0 ? TimeCircleFormat.hourNumber(currentTime) : "\(tick * 5)"
         }
     }
 
