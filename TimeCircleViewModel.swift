@@ -355,6 +355,7 @@ final class TimeCircleViewModel: ObservableObject {
         } else {
             ensureValidActiveTrackingState()
             persistActiveTrackingState()
+            syncLiveActivityIfNeeded()
         }
     }
 
@@ -667,6 +668,7 @@ final class TimeCircleViewModel: ObservableObject {
 
         tasks[editingIndex].name = name
         saveData()
+        syncLiveActivityIfNeeded()
     }
 
     func updateEditingTaskColor(_ color: Color) {
@@ -674,6 +676,7 @@ final class TimeCircleViewModel: ObservableObject {
 
         tasks[editingIndex].color = StoredColor(from: color)
         saveData()
+        syncLiveActivityIfNeeded()
     }
 
     func updateEditingTaskDescription(_ description: String) {
@@ -688,6 +691,7 @@ final class TimeCircleViewModel: ObservableObject {
 
         tasks[editingIndex].activityType = activityType
         saveData()
+        syncLiveActivityIfNeeded()
     }
 
     func start() {
@@ -701,6 +705,7 @@ final class TimeCircleViewModel: ObservableObject {
         elapsedBeforePause = 0
         state = .running
         persistActiveTrackingState()
+        syncLiveActivityIfNeeded()
     }
 
     func pause() {
@@ -713,6 +718,7 @@ final class TimeCircleViewModel: ObservableObject {
         runningStartTime = nil
         state = .paused
         persistActiveTrackingState()
+        syncLiveActivityIfNeeded()
     }
 
     func resume() {
@@ -721,6 +727,7 @@ final class TimeCircleViewModel: ObservableObject {
         runningStartTime = Date()
         state = .running
         persistActiveTrackingState()
+        syncLiveActivityIfNeeded()
     }
 
     func togglePauseResume() {
@@ -831,6 +838,7 @@ final class TimeCircleViewModel: ObservableObject {
         runningStartTime = nil
         elapsedBeforePause = 0
         TimeCircleStorage.clearActiveTrackingState()
+        endLiveActivity()
     }
 
     private func randomTaskColor() -> StoredColor {
@@ -1084,5 +1092,36 @@ final class TimeCircleViewModel: ObservableObject {
         }
 
         persistActiveTrackingState()
+        syncLiveActivityIfNeeded()
+    }
+
+    private func syncLiveActivityIfNeeded() {
+        guard state != .stopped,
+              let selectedTask,
+              let startTime
+        else {
+            endLiveActivity()
+            return
+        }
+
+        #if canImport(ActivityKit)
+        if #available(iOS 16.2, *) {
+            LiveActivityManager.shared.startOrUpdate(
+                task: selectedTask,
+                startTime: startTime,
+                runningStartTime: runningStartTime,
+                elapsedBeforePause: elapsedBeforePause,
+                isPaused: state == .paused
+            )
+        }
+        #endif
+    }
+
+    private func endLiveActivity() {
+        #if canImport(ActivityKit)
+        if #available(iOS 16.2, *) {
+            LiveActivityManager.shared.end()
+        }
+        #endif
     }
 }
