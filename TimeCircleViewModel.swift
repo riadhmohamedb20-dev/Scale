@@ -335,6 +335,25 @@ final class TimeCircleViewModel: ObservableObject {
         ensureValidSelectedTask()
     }
 
+    func replaceData(with backup: ScaleBackup) {
+        resetCurrentTracking()
+        tasks = backup.tasks
+        sessions = backup.sessions
+        selectedTaskID = nil
+        selectedReviewTaskName = nil
+        highlightedReviewSessionIDs = []
+        selectedSessionID = nil
+        editingTaskID = nil
+        editingSessionID = nil
+        isAddingTask = false
+        isShowingTaskPicker = false
+        isShowingManualSessionTaskPicker = false
+        isAddingManualSession = false
+        isShowingHistoryPicker = false
+        selectedDay = Calendar.current.startOfDay(for: now)
+        saveData()
+    }
+
     func updateCurrentTime(_ date: Date) {
         now = date
         if isViewingToday {

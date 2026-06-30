@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import UniformTypeIdentifiers
 #if canImport(UIKit)
 import UIKit
 #elseif canImport(AppKit)
@@ -15,13 +16,23 @@ struct ContentView: View {
     @State private var isShowingSaveConfirmation = false
     @State private var isDatePillPressed = false
     @State private var isShowingAddOptions = false
+    @State private var isShowingMoreOptions = false
+    @State private var isShowingDataOptions = false
+    @State private var isShowingBackupShareSheet = false
+    @State private var isShowingBackupImporter = false
+    @State private var isShowingImportConfirmation = false
+    @State private var isShowingImportError = false
+    @State private var isShowingImportSuccess = false
+    @State private var backupExportURL: URL?
+    @State private var pendingBackup: ScaleBackup?
+    @State private var importErrorMessage = ""
 
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     private let activityChipLeadingSpacerID = "activityChipLeadingSpacer"
     private let activityHeadingBottomPadding: CGFloat = -4
     private let activityChipRowTopPadding: CGFloat = 18
     private let previousDayActivityChipRowTopPadding: CGFloat = 8
-    private let trackingTopBarTopPadding: CGFloat = 12
+    private let trackingTopBarTopPadding: CGFloat = 2
     private let trackingTopBarHeight: CGFloat = 36
     private let trackingTopBarHorizontalPadding: CGFloat = 16
     private let returnToTodayButtonTrailingOffset: CGFloat = 46
@@ -183,6 +194,59 @@ struct ContentView: View {
 
             Button("Cancel", role: .cancel) { }
         }
+        .confirmationDialog("More", isPresented: $isShowingMoreOptions, titleVisibility: .visible) {
+            Button("Share") {
+                saveCurrentCircleImage()
+            }
+
+            Button("Data") {
+                isShowingDataOptions = true
+            }
+
+            Button("Cancel", role: .cancel) { }
+        }
+        .confirmationDialog("Data", isPresented: $isShowingDataOptions, titleVisibility: .visible) {
+            Button("Export Backup") {
+                exportBackup()
+            }
+
+            Button("Import Backup") {
+                isShowingBackupImporter = true
+            }
+
+            Button("Cancel", role: .cancel) { }
+        }
+        .fileImporter(
+            isPresented: $isShowingBackupImporter,
+            allowedContentTypes: [.json],
+            allowsMultipleSelection: false,
+            onCompletion: handleBackupImportSelection
+        )
+        .alert("Import Backup?", isPresented: $isShowingImportConfirmation) {
+            Button("Import", role: .destructive, action: importPendingBackup)
+            Button("Cancel", role: .cancel) {
+                pendingBackup = nil
+            }
+        } message: {
+            Text("Importing this backup will replace your current activities and sessions.")
+        }
+        .alert("Import Failed", isPresented: $isShowingImportError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(importErrorMessage)
+        }
+        .alert("Backup Imported", isPresented: $isShowingImportSuccess) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("Your activities and sessions were restored.")
+        }
+        #if canImport(UIKit)
+        .sheet(isPresented: $isShowingBackupShareSheet) {
+            if let backupExportURL {
+                BackupShareSheet(activityItems: [backupExportURL])
+            }
+        }
+        #endif
         .overlay(alignment: .bottom) {
             if isShowingSaveConfirmation {
                 Text("Saved to Photos")
@@ -199,7 +263,10 @@ struct ContentView: View {
     }
 
     private var trackingView: some View {
-        ZStack {
+        GeometryReader { proxy in
+            let topBarTopPadding = trackingTopBarTopPadding + proxy.safeAreaInsets.top
+
+            ZStack {
             Color(platformSystemBackground)
                 .ignoresSafeArea()
                 .onTapGesture {
@@ -207,7 +274,7 @@ struct ContentView: View {
                 }
 
             VStack(spacing: 14) {
-                topBarPlaceholder
+                topBarPlaceholder(topPadding: topBarTopPadding)
 
                 timelinePager
 
@@ -218,10 +285,8 @@ struct ContentView: View {
 
                 if viewModel.isViewingToday {
                     controls
-                        .padding(.bottom, 64)
                 } else {
                     pastDayControls
-                        .padding(.bottom, 64)
                 }
             }
             .background {
@@ -236,18 +301,19 @@ struct ContentView: View {
 
             VStack {
                 topBar
-                    .padding(.top, trackingTopBarTopPadding)
+                    .padding(.top, topBarTopPadding)
 
                 Spacer()
             }
         }
-        .animation(.easeInOut(duration: 0.25), value: viewModel.selectedDay)
+            .animation(.easeInOut(duration: 0.25), value: viewModel.selectedDay)
+        }
     }
 
-    private var topBarPlaceholder: some View {
+    private func topBarPlaceholder(topPadding: CGFloat) -> some View {
         Color.clear
             .frame(height: trackingTopBarHeight)
-            .padding(.top, trackingTopBarTopPadding)
+            .padding(.top, topPadding)
     }
 
     private var topBar: some View {
@@ -448,7 +514,7 @@ struct ContentView: View {
                             .clipShape(Circle())
                     }
 
-                    saveImageButton
+                    moreButton
                 }
             } else {
                 HStack(spacing: 34) {
@@ -487,7 +553,7 @@ struct ContentView: View {
 
     private var pastDayControls: some View {
         HStack {
-            saveImageButton
+            moreButton
         }
     }
 
@@ -506,11 +572,11 @@ struct ContentView: View {
         }
     }
 
-    private var saveImageButton: some View {
+    private var moreButton: some View {
         Button {
-            saveCurrentCircleImage()
+            isShowingMoreOptions = true
         } label: {
-            Image(systemName: "square.and.arrow.down")
+            Image(systemName: "ellipsis")
                 .font(.system(size: 25, weight: .bold))
                 .foregroundStyle(secondaryControlIconColor)
                 .frame(width: 64, height: 64)
@@ -806,7 +872,81 @@ struct ContentView: View {
             }
         }
     }
+
+    private func exportBackup() {
+        do {
+            let data = try TimeCircleStorage.backupData(
+                tasks: viewModel.tasks,
+                sessions: viewModel.sessions,
+                appearanceModeRawValue: appearanceModeRaw
+            )
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent(backupFileName())
+
+            try data.write(to: url, options: [.atomic])
+            backupExportURL = url
+
+            #if canImport(UIKit)
+            isShowingBackupShareSheet = true
+            #endif
+        } catch {
+            importErrorMessage = "Scale could not create a backup file. Please try again."
+            isShowingImportError = true
+        }
+    }
+
+    private func handleBackupImportSelection(_ result: Result<[URL], Error>) {
+        do {
+            guard let url = try result.get().first else { return }
+            let didAccessSecurityScopedResource = url.startAccessingSecurityScopedResource()
+            defer {
+                if didAccessSecurityScopedResource {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
+
+            let data = try Data(contentsOf: url)
+            pendingBackup = try TimeCircleStorage.decodeBackup(from: data)
+            isShowingImportConfirmation = true
+        } catch {
+            importErrorMessage = "Scale could not read this backup file."
+            isShowingImportError = true
+        }
+    }
+
+    private func importPendingBackup() {
+        guard let pendingBackup else { return }
+
+        viewModel.replaceData(with: pendingBackup)
+
+        if let rawValue = pendingBackup.appearanceModeRawValue,
+           AppAppearanceMode(rawValue: rawValue) != nil {
+            appearanceModeRaw = rawValue
+        }
+
+        self.pendingBackup = nil
+        isShowingImportSuccess = true
+    }
+
+    private func backupFileName() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd-HH-mm"
+        return "Scale-Backup-\(formatter.string(from: Date())).json"
+    }
 }
+
+#if canImport(UIKit)
+private struct BackupShareSheet: UIViewControllerRepresentable {
+    let activityItems: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) { }
+}
+#endif
 
 private struct TaskChipView: View {
     let task: TaskChipItem

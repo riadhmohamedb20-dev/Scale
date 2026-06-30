@@ -1,5 +1,62 @@
 import Foundation
 
+struct ScaleBackup: Codable {
+    var schemaVersion: Int
+    var exportedAt: Date
+    var tasks: [TaskItem]
+    var sessions: [SessionItem]
+    var appearanceModeRawValue: String?
+
+    init(
+        schemaVersion: Int = 1,
+        exportedAt: Date = Date(),
+        tasks: [TaskItem],
+        sessions: [SessionItem],
+        appearanceModeRawValue: String?
+    ) {
+        self.schemaVersion = schemaVersion
+        self.exportedAt = exportedAt
+        self.tasks = tasks
+        self.sessions = sessions
+        self.appearanceModeRawValue = appearanceModeRawValue
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case exportedAt
+        case tasks
+        case sessions
+        case appearanceModeRawValue
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        exportedAt = try container.decodeIfPresent(Date.self, forKey: .exportedAt) ?? Date()
+        tasks = try container.decode([TaskItem].self, forKey: .tasks)
+        sessions = try container.decode([SessionItem].self, forKey: .sessions)
+        appearanceModeRawValue = try container.decodeIfPresent(String.self, forKey: .appearanceModeRawValue)
+    }
+
+    func validate() throws {
+        guard schemaVersion >= 1 else {
+            throw ScaleBackupError.unsupportedVersion
+        }
+
+        guard Set(tasks.map(\.id)).count == tasks.count,
+              Set(sessions.map(\.id)).count == sessions.count
+        else {
+            throw ScaleBackupError.duplicateData
+        }
+    }
+}
+
+enum ScaleBackupError: Error {
+    case unsupportedVersion
+    case duplicateData
+}
+
 enum TimeCircleStorage {
     private static let tasksKey = "timeCircleTasks"
     private static let sessionsKey = "timeCircleSessions"
@@ -38,6 +95,30 @@ enum TimeCircleStorage {
 
     static func clearActiveTrackingState() {
         UserDefaults.standard.removeObject(forKey: activeTrackingStateKey)
+    }
+
+    static func backupData(
+        tasks: [TaskItem],
+        sessions: [SessionItem],
+        appearanceModeRawValue: String?
+    ) throws -> Data {
+        let backup = ScaleBackup(
+            tasks: tasks,
+            sessions: sessions,
+            appearanceModeRawValue: appearanceModeRawValue
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(backup)
+    }
+
+    static func decodeBackup(from data: Data) throws -> ScaleBackup {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let backup = try decoder.decode(ScaleBackup.self, from: data)
+        try backup.validate()
+        return backup
     }
 
     private static func saveCodable<T: Codable>(_ value: T, forKey key: String) {
