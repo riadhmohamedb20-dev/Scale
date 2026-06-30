@@ -31,6 +31,7 @@ final class TimeCircleViewModel: ObservableObject {
     private var startTime: Date?
     private var runningStartTime: Date?
     private var elapsedBeforePause: TimeInterval = 0
+    private var recentTaskInteractionDates: [UUID: Date] = [:]
 
     var selectedIndex: Int? {
         guard let selectedTaskID else { return nil }
@@ -123,6 +124,24 @@ final class TimeCircleViewModel: ObservableObject {
 
         return tasks.enumerated()
             .sorted { first, second in
+                if isViewingToday {
+                    let firstInteraction = recentTaskInteractionDates[first.element.id] ?? latestUseByTaskName[first.element.name]
+                    let secondInteraction = recentTaskInteractionDates[second.element.id] ?? latestUseByTaskName[second.element.name]
+
+                    switch (firstInteraction, secondInteraction) {
+                    case let (firstInteraction?, secondInteraction?):
+                        if firstInteraction != secondInteraction {
+                            return firstInteraction > secondInteraction
+                        }
+                    case (_?, nil):
+                        return true
+                    case (nil, _?):
+                        return false
+                    case (nil, nil):
+                        break
+                    }
+                }
+
                 let firstUse = latestUseByTaskName[first.element.name]
                 let secondUse = latestUseByTaskName[second.element.name]
 
@@ -231,6 +250,9 @@ final class TimeCircleViewModel: ObservableObject {
 
     var timelineCountdownDisplay: TimeInterval {
         guard isViewingToday, state != .stopped, let selectedTask else { return 0 }
+        guard selectedTask.activityType != .neutral else {
+            return selectedTaskTrackedTimeForSelectedDay + elapsed
+        }
 
         return remainingTimeToday(for: selectedTask.activityType) - elapsed
     }
@@ -472,7 +494,13 @@ final class TimeCircleViewModel: ObservableObject {
     }
 
     func closeTaskEditor() {
+        let editedTaskID = editingTaskID
         editingTaskID = nil
+
+        if isViewingToday, let editedTaskID {
+            markTaskInteraction(editedTaskID)
+            moveTaskToFront(editedTaskID)
+        }
     }
 
     func openSessionEditor(_ session: SessionItem) {
@@ -714,9 +742,10 @@ final class TimeCircleViewModel: ObservableObject {
     }
 
     func start() {
-        guard selectedTask != nil else { return }
+        guard let selectedTaskID, selectedTask != nil else { return }
 
         selectedSessionID = nil
+        markTaskInteraction(selectedTaskID)
 
         let date = Date()
         startTime = date
@@ -907,13 +936,9 @@ final class TimeCircleViewModel: ObservableObject {
     private func trackedTime(for activityType: ActivityType, in interval: DateInterval?) -> TimeInterval {
         guard let interval else { return 0 }
 
-        let trackedDuration = clippedSessions(overlapping: interval)
+        return clippedSessions(overlapping: interval)
             .filter { $0.activityType == activityType }
             .reduce(0) { $0 + $1.duration }
-
-        guard activityType == .neutral else { return trackedDuration }
-
-        return trackedDuration + untrackedNeutralDuration(in: interval)
     }
 
     private func remainingTimeToday(for activityType: ActivityType) -> TimeInterval {
@@ -927,47 +952,6 @@ final class TimeCircleViewModel: ObservableObject {
         guard let dayInterval = Calendar.current.dateInterval(of: .day, for: now) else { return nil }
 
         return DateInterval(start: dayInterval.start, end: min(now, dayInterval.end))
-    }
-
-    private func untrackedNeutralDuration(in interval: DateInterval) -> TimeInterval {
-        let coveredIntervals = clippedSessions(overlapping: interval)
-            .map { DateInterval(start: $0.startTime, duration: $0.duration) }
-            + activeTrackingIntervals(overlapping: interval)
-        let coveredDuration = mergedDuration(of: coveredIntervals)
-
-        return max(interval.duration - coveredDuration, 0)
-    }
-
-    private func activeTrackingIntervals(overlapping interval: DateInterval) -> [DateInterval] {
-        guard state != .stopped, let startTime else { return [] }
-
-        let activeEnd = min(startTime.addingTimeInterval(elapsed), now)
-        let clippedStart = max(startTime, interval.start)
-        let clippedEnd = min(activeEnd, interval.end)
-        guard clippedEnd > clippedStart else { return [] }
-
-        return [DateInterval(start: clippedStart, end: clippedEnd)]
-    }
-
-    private func mergedDuration(of intervals: [DateInterval]) -> TimeInterval {
-        let sortedIntervals = intervals
-            .filter { $0.end > $0.start }
-            .sorted { $0.start < $1.start }
-        guard var current = sortedIntervals.first else { return 0 }
-
-        var duration: TimeInterval = 0
-
-        for interval in sortedIntervals.dropFirst() {
-            if interval.start <= current.end {
-                current = DateInterval(start: current.start, end: max(current.end, interval.end))
-            } else {
-                duration += current.duration
-                current = interval
-            }
-        }
-
-        duration += current.duration
-        return duration
     }
 
     private func clippedSessions(overlapping interval: DateInterval) -> [SessionItem] {
@@ -1057,6 +1041,12 @@ final class TimeCircleViewModel: ObservableObject {
         let task = tasks.remove(at: index)
         tasks.insert(task, at: 0)
         saveData()
+    }
+
+    private func markTaskInteraction(_ taskID: UUID) {
+        guard isViewingToday else { return }
+
+        recentTaskInteractionDates[taskID] = Date()
     }
 
     private func saveData() {
