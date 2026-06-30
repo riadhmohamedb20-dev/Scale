@@ -3,6 +3,7 @@ import Foundation
 enum TimeCircleStorage {
     private static let tasksKey = "timeCircleTasks"
     private static let sessionsKey = "timeCircleSessions"
+    private static let activeTrackingStateKey = "timeCircleActiveTrackingState"
 
     static let defaultTasks = [
         TaskItem(name: "Learning French", color: .red),
@@ -20,6 +21,23 @@ enum TimeCircleStorage {
 
     static func loadSessions() -> [SessionItem]? {
         loadCodable([SessionItem].self, forKey: sessionsKey)
+    }
+
+    static func save(activeTrackingState: ActiveTrackingState?) {
+        guard let activeTrackingState else {
+            UserDefaults.standard.removeObject(forKey: activeTrackingStateKey)
+            return
+        }
+
+        saveCodable(activeTrackingState, forKey: activeTrackingStateKey)
+    }
+
+    static func loadActiveTrackingState() -> ActiveTrackingState? {
+        loadCodable(ActiveTrackingState.self, forKey: activeTrackingStateKey)
+    }
+
+    static func clearActiveTrackingState() {
+        UserDefaults.standard.removeObject(forKey: activeTrackingStateKey)
     }
 
     private static func saveCodable<T: Codable>(_ value: T, forKey key: String) {

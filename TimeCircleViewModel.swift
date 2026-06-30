@@ -229,6 +229,12 @@ final class TimeCircleViewModel: ObservableObject {
             .reduce(0) { $0 + $1.duration }
     }
 
+    var timelineCountdownDisplay: TimeInterval {
+        guard isViewingToday, state != .stopped, let selectedTask else { return 0 }
+
+        return remainingTimeToday(for: selectedTask.activityType) - elapsed
+    }
+
     var historySummaries: [DayHistorySummary] {
         var groupedSessions: [Date: [SessionItem]] = [:]
 
@@ -258,10 +264,10 @@ final class TimeCircleViewModel: ObservableObject {
         case .stopped:
             return 0
         case .paused:
-            return elapsedBeforePause
+            return max(elapsedBeforePause, 0)
         case .running:
             guard let runningStartTime else { return elapsedBeforePause }
-            return elapsedBeforePause + now.timeIntervalSince(runningStartTime)
+            return max(elapsedBeforePause + now.timeIntervalSince(runningStartTime), 0)
         }
     }
 
@@ -295,15 +301,20 @@ final class TimeCircleViewModel: ObservableObject {
     }
 
     var activityTypeTimeSummaries: [ActivityTypeTimeSummary] {
-        let totalDuration = sessions.reduce(0) { $0 + $1.duration }
-        let groupedSessions = Dictionary(grouping: sessions, by: \.activityType)
+        let interval = elapsedTodayInterval
+        let durationsByActivityType = Dictionary(
+            uniqueKeysWithValues: ActivityType.allCases.map { activityType in
+                (activityType, trackedTime(for: activityType, in: interval))
+            }
+        )
+        let totalDuration = durationsByActivityType.values.reduce(0, +)
 
         return ActivityType.allCases.map { activityType in
-            let duration = groupedSessions[activityType, default: []].reduce(0) { $0 + $1.duration }
             return ActivityTypeTimeSummary(
                 activityType: activityType,
-                duration: duration,
-                totalDuration: totalDuration
+                duration: durationsByActivityType[activityType] ?? 0,
+                totalDuration: totalDuration,
+                targetDuration: activityType.dailyTargetDuration
             )
         }
     }
@@ -320,6 +331,7 @@ final class TimeCircleViewModel: ObservableObject {
             sessions = decodedSessions
         }
 
+        restoreActiveTrackingState()
         ensureValidSelectedTask()
     }
 
@@ -327,6 +339,22 @@ final class TimeCircleViewModel: ObservableObject {
         now = date
         if isViewingToday {
             selectedDay = Calendar.current.startOfDay(for: date)
+        }
+
+        ensureValidActiveTrackingState()
+    }
+
+    func appWillResignActive() {
+        persistActiveTrackingState()
+    }
+
+    func appDidBecomeActive() {
+        now = Date()
+        if state == .stopped {
+            restoreActiveTrackingState()
+        } else {
+            ensureValidActiveTrackingState()
+            persistActiveTrackingState()
         }
     }
 
@@ -373,6 +401,14 @@ final class TimeCircleViewModel: ObservableObject {
 
     func isSessionHighlightedForReview(_ session: SessionItem) -> Bool {
         highlightedReviewSessionIDs.contains(session.id)
+    }
+
+    func activityForEditing(from chip: TaskChipItem) -> TaskItem? {
+        if let taskID = chip.taskID {
+            return tasks.first { $0.id == taskID }
+        }
+
+        return tasks.first { $0.name == chip.name }
     }
 
     func clearSelectedTaskFromBackgroundTap() {
@@ -505,8 +541,6 @@ final class TimeCircleViewModel: ObservableObject {
     }
 
     func openAddTaskSheet() {
-        guard isViewingToday else { return }
-
         newTaskName = ""
         newTaskColor = randomTaskColor().color
         newTaskDescription = ""
@@ -529,8 +563,6 @@ final class TimeCircleViewModel: ObservableObject {
     }
 
     func openManualSessionTaskPicker() {
-        guard !isViewingToday else { return }
-
         isShowingManualSessionTaskPicker = true
     }
 
@@ -539,8 +571,6 @@ final class TimeCircleViewModel: ObservableObject {
     }
 
     func openManualSessionEditor(for task: TaskItem) {
-        guard !isViewingToday else { return }
-
         let dayStart = Calendar.current.startOfDay(for: selectedDay)
         let defaultEnd = Calendar.current.date(byAdding: .hour, value: 1, to: dayStart) ?? dayStart
 
@@ -670,6 +700,7 @@ final class TimeCircleViewModel: ObservableObject {
         runningStartTime = date
         elapsedBeforePause = 0
         state = .running
+        persistActiveTrackingState()
     }
 
     func pause() {
@@ -681,6 +712,7 @@ final class TimeCircleViewModel: ObservableObject {
 
         runningStartTime = nil
         state = .paused
+        persistActiveTrackingState()
     }
 
     func resume() {
@@ -688,6 +720,7 @@ final class TimeCircleViewModel: ObservableObject {
 
         runningStartTime = Date()
         state = .running
+        persistActiveTrackingState()
     }
 
     func togglePauseResume() {
@@ -797,6 +830,7 @@ final class TimeCircleViewModel: ObservableObject {
         startTime = nil
         runningStartTime = nil
         elapsedBeforePause = 0
+        TimeCircleStorage.clearActiveTrackingState()
     }
 
     private func randomTaskColor() -> StoredColor {
@@ -841,6 +875,72 @@ final class TimeCircleViewModel: ObservableObject {
 
         return clippedSessions(overlapping: interval)
             .reduce(0) { $0 + $1.duration }
+    }
+
+    private func trackedTime(for activityType: ActivityType, in interval: DateInterval?) -> TimeInterval {
+        guard let interval else { return 0 }
+
+        let trackedDuration = clippedSessions(overlapping: interval)
+            .filter { $0.activityType == activityType }
+            .reduce(0) { $0 + $1.duration }
+
+        guard activityType == .neutral else { return trackedDuration }
+
+        return trackedDuration + untrackedNeutralDuration(in: interval)
+    }
+
+    private func remainingTimeToday(for activityType: ActivityType) -> TimeInterval {
+        activityType.dailyTargetDuration - trackedTime(
+            for: activityType,
+            in: elapsedTodayInterval
+        )
+    }
+
+    private var elapsedTodayInterval: DateInterval? {
+        guard let dayInterval = Calendar.current.dateInterval(of: .day, for: now) else { return nil }
+
+        return DateInterval(start: dayInterval.start, end: min(now, dayInterval.end))
+    }
+
+    private func untrackedNeutralDuration(in interval: DateInterval) -> TimeInterval {
+        let coveredIntervals = clippedSessions(overlapping: interval)
+            .map { DateInterval(start: $0.startTime, duration: $0.duration) }
+            + activeTrackingIntervals(overlapping: interval)
+        let coveredDuration = mergedDuration(of: coveredIntervals)
+
+        return max(interval.duration - coveredDuration, 0)
+    }
+
+    private func activeTrackingIntervals(overlapping interval: DateInterval) -> [DateInterval] {
+        guard state != .stopped, let startTime else { return [] }
+
+        let activeEnd = min(startTime.addingTimeInterval(elapsed), now)
+        let clippedStart = max(startTime, interval.start)
+        let clippedEnd = min(activeEnd, interval.end)
+        guard clippedEnd > clippedStart else { return [] }
+
+        return [DateInterval(start: clippedStart, end: clippedEnd)]
+    }
+
+    private func mergedDuration(of intervals: [DateInterval]) -> TimeInterval {
+        let sortedIntervals = intervals
+            .filter { $0.end > $0.start }
+            .sorted { $0.start < $1.start }
+        guard var current = sortedIntervals.first else { return 0 }
+
+        var duration: TimeInterval = 0
+
+        for interval in sortedIntervals.dropFirst() {
+            if interval.start <= current.end {
+                current = DateInterval(start: current.start, end: max(current.end, interval.end))
+            } else {
+                duration += current.duration
+                current = interval
+            }
+        }
+
+        duration += current.duration
+        return duration
     }
 
     private func clippedSessions(overlapping interval: DateInterval) -> [SessionItem] {
@@ -913,6 +1013,17 @@ final class TimeCircleViewModel: ObservableObject {
         }
     }
 
+    private func ensureValidActiveTrackingState() {
+        guard state != .stopped else { return }
+        guard let selectedTaskID,
+              tasks.contains(where: { $0.id == selectedTaskID })
+        else {
+            self.selectedTaskID = nil
+            resetCurrentTracking()
+            return
+        }
+    }
+
     private func moveTaskToFront(_ taskID: UUID) {
         guard let index = tasks.firstIndex(where: { $0.id == taskID }), index != 0 else { return }
 
@@ -923,5 +1034,55 @@ final class TimeCircleViewModel: ObservableObject {
 
     private func saveData() {
         TimeCircleStorage.save(tasks: tasks, sessions: sessions)
+    }
+
+    func persistActiveTrackingState() {
+        guard state != .stopped,
+              let selectedTaskID,
+              let startTime,
+              tasks.contains(where: { $0.id == selectedTaskID })
+        else {
+            TimeCircleStorage.clearActiveTrackingState()
+            return
+        }
+
+        TimeCircleStorage.save(
+            activeTrackingState: ActiveTrackingState(
+                taskID: selectedTaskID,
+                startTime: startTime,
+                runningStartTime: runningStartTime,
+                elapsedBeforePause: elapsedBeforePause,
+                isPaused: state == .paused
+            )
+        )
+    }
+
+    private func restoreActiveTrackingState() {
+        guard let storedState = TimeCircleStorage.loadActiveTrackingState() else { return }
+        guard tasks.contains(where: { $0.id == storedState.taskID }) else {
+            TimeCircleStorage.clearActiveTrackingState()
+            resetCurrentTracking()
+            selectedTaskID = nil
+            return
+        }
+
+        now = Date()
+        selectedDay = Calendar.current.startOfDay(for: now)
+        selectedTaskID = storedState.taskID
+        selectedReviewTaskName = nil
+        highlightedReviewSessionIDs = []
+        selectedSessionID = nil
+        startTime = storedState.startTime
+        elapsedBeforePause = max(storedState.elapsedBeforePause, 0)
+
+        if storedState.isPaused {
+            state = .paused
+            runningStartTime = nil
+        } else {
+            state = .running
+            runningStartTime = storedState.runningStartTime ?? storedState.startTime
+        }
+
+        persistActiveTrackingState()
     }
 }

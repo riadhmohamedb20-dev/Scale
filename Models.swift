@@ -113,6 +113,17 @@ enum ActivityType: String, CaseIterable, Identifiable, Codable {
         }
     }
 
+    var dailyTargetDuration: TimeInterval {
+        switch self {
+        case .pleasure:
+            return 21_600
+        case .neutral:
+            return 43_200
+        case .pain:
+            return 21_600
+        }
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         let rawValue = try container.decode(String.self)
@@ -255,6 +266,7 @@ struct ActivityTypeTimeSummary: Identifiable, Equatable {
     var activityType: ActivityType
     var duration: TimeInterval
     var totalDuration: TimeInterval
+    var targetDuration: TimeInterval
 
     var id: ActivityType {
         activityType
@@ -263,6 +275,10 @@ struct ActivityTypeTimeSummary: Identifiable, Equatable {
     var percentage: Int {
         guard totalDuration > 0 else { return 0 }
         return Int((duration / totalDuration * 100).rounded())
+    }
+
+    var remainingDuration: TimeInterval {
+        max(targetDuration - duration, 0)
     }
 }
 
@@ -276,6 +292,12 @@ struct DayHistorySummary: Identifiable, Equatable {
 
     var totalDuration: TimeInterval {
         sessions.reduce(0) { $0 + $1.duration }
+    }
+
+    var painDuration: TimeInterval {
+        sessions
+            .filter { $0.activityType == .pain }
+            .reduce(0) { $0 + $1.duration }
     }
 
     var formattedDate: String {
@@ -298,6 +320,14 @@ struct DayHistorySummary: Identifiable, Equatable {
 
 enum TrackingState {
     case stopped, running, paused
+}
+
+struct ActiveTrackingState: Codable, Equatable {
+    var taskID: UUID
+    var startTime: Date
+    var runningStartTime: Date?
+    var elapsedBeforePause: TimeInterval
+    var isPaused: Bool
 }
 
 enum TimeCircleFormat {
@@ -375,6 +405,19 @@ enum TimeCircleFormat {
     static func elapsedSeconds(_ seconds: Int) -> String {
         let clampedSeconds = max(seconds, 0)
         let s = clampedSeconds % 60
+        return String(format: "%02d", s)
+    }
+
+    static func countdownHoursMinutes(_ seconds: Int) -> String {
+        let absoluteSeconds = abs(seconds)
+        let h = absoluteSeconds / 3600
+        let m = (absoluteSeconds % 3600) / 60
+        let prefix = seconds < 0 ? "+" : ""
+        return String(format: "\(prefix)%02d:%02d", h, m)
+    }
+
+    static func countdownSeconds(_ seconds: Int) -> String {
+        let s = abs(seconds) % 60
         return String(format: "%02d", s)
     }
 

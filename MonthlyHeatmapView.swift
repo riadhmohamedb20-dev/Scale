@@ -155,16 +155,16 @@ struct MonthlyHeatmapView: View {
                 .font(.headline.weight(.bold))
                 .foregroundStyle(.primary)
 
-            Text("Each square represents the total time tracked for that day.")
+            Text("Each square represents Pain progress toward the 6-hour daily target.")
                 .font(.body)
                 .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 12) {
-                legendRow(color: inactiveColor, title: "No activity")
-                legendRow(color: lowActivityColor, title: "1 - 29 min")
-                legendRow(color: mediumLowActivityColor, title: "30 min - 1 h 59 min")
-                legendRow(color: mediumActivityColor, title: "2 h - 4 h 59 min")
-                legendRow(color: highActivityColor, title: "5 h or more")
+                legendRow(color: inactiveColor, title: "No Pain time")
+                legendRow(color: lowActivityColor, title: "Less than 1 h 30 min")
+                legendRow(color: mediumLowActivityColor, title: "1 h 30 min - 2 h 59 min")
+                legendRow(color: mediumActivityColor, title: "3 h - 5 h 59 min")
+                legendRow(color: highActivityColor, title: "6 h or more")
                 legendRow(color: todayColor, title: "Today")
             }
         }
@@ -257,9 +257,9 @@ struct MonthlyHeatmapView: View {
         return rows
     }
 
-    private var totalsByDay: [Date: TimeInterval] {
+    private var painTotalsByDay: [Date: TimeInterval] {
         Dictionary(uniqueKeysWithValues: summaries.map { summary in
-            (Calendar.current.startOfDay(for: summary.day), summary.totalDuration)
+            (Calendar.current.startOfDay(for: summary.day), summary.painDuration)
         })
     }
 
@@ -269,8 +269,12 @@ struct MonthlyHeatmapView: View {
         return calendar
     }
 
-    private func totalDuration(on day: Date) -> TimeInterval {
-        totalsByDay[Calendar.current.startOfDay(for: day)] ?? 0
+    private func painDuration(on day: Date) -> TimeInterval {
+        painTotalsByDay[Calendar.current.startOfDay(for: day)] ?? 0
+    }
+
+    private func painProgress(on day: Date) -> Double {
+        min(max(painDuration(on: day) / ActivityType.pain.dailyTargetDuration, 0), 1)
     }
 
     private func heatmapDayKind(for day: Date, in monthInterval: DateInterval) -> HeatmapDay.Kind {
@@ -294,14 +298,14 @@ struct MonthlyHeatmapView: View {
             return todayColor
         }
 
-        switch totalDuration(on: day) {
+        switch painProgress(on: day) {
         case 0:
             return inactiveColor
-        case ..<1_800:
+        case ..<0.25:
             return lowActivityColor
-        case ..<7_200:
+        case ..<0.5:
             return mediumLowActivityColor
-        case ..<18_000:
+        case ..<1:
             return mediumActivityColor
         default:
             return highActivityColor
@@ -321,7 +325,7 @@ struct MonthlyHeatmapView: View {
             return .white
         }
 
-        return totalDuration(on: day) >= 18_000 ? .white : .white.opacity(0.86)
+        return painProgress(on: day) >= 0.5 ? .white : .white.opacity(0.86)
     }
 
     private var inactiveColor: Color {
@@ -329,19 +333,19 @@ struct MonthlyHeatmapView: View {
     }
 
     private var lowActivityColor: Color {
-        Color(red: 0.75, green: 0.93, blue: 0.38)
+        Color(red: 1.0, green: 0.76, blue: 0.58)
     }
 
     private var mediumLowActivityColor: Color {
-        Color(red: 0.55, green: 0.82, blue: 0.25)
+        Color(red: 1.0, green: 0.53, blue: 0.30)
     }
 
     private var mediumActivityColor: Color {
-        Color(red: 0.28, green: 0.70, blue: 0.25)
+        Color(red: 0.94, green: 0.28, blue: 0.18)
     }
 
     private var highActivityColor: Color {
-        Color(red: 0.00, green: 0.35, blue: 0.11)
+        Color(red: 0.62, green: 0.08, blue: 0.04)
     }
 
     private var todayColor: Color {

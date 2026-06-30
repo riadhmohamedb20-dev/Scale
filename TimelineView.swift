@@ -159,14 +159,14 @@ struct TimelineView: View {
 
     private var centerElapsedTimerText: some View {
         VStack(spacing: 2) {
-            Text(TimeCircleFormat.elapsedHoursMinutes(Int(displayElapsed)))
+            Text(TimeCircleFormat.countdownHoursMinutes(Int(displayElapsed)))
                 .font(.system(size: 38, weight: .bold))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
                 .allowsTightening(true)
 
-            Text(TimeCircleFormat.elapsedSeconds(Int(displayElapsed)))
+            Text(TimeCircleFormat.countdownSeconds(Int(displayElapsed)))
                 .font(.system(size: 18, weight: .semibold).monospacedDigit())
                 .foregroundStyle(.secondary)
                 .lineLimit(1)

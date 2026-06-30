@@ -8,14 +8,23 @@ import AppKit
 
 struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("appAppearanceMode") private var appearanceModeRaw = AppAppearanceMode.system.rawValue
     @StateObject private var viewModel = TimeCircleViewModel()
     @State private var selectedTimelinePage = 0
     @State private var isShowingSaveConfirmation = false
     @State private var isDatePillPressed = false
+    @State private var isShowingAddOptions = false
 
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     private let activityChipLeadingSpacerID = "activityChipLeadingSpacer"
+    private let activityHeadingBottomPadding: CGFloat = -4
+    private let activityChipRowTopPadding: CGFloat = 18
+    private let previousDayActivityChipRowTopPadding: CGFloat = 8
+    private let trackingTopBarTopPadding: CGFloat = 12
+    private let trackingTopBarHeight: CGFloat = 36
+    private let trackingTopBarHorizontalPadding: CGFloat = 16
+    private let returnToTodayButtonTrailingOffset: CGFloat = 46
 
     private var appearanceMode: AppAppearanceMode {
         AppAppearanceMode(rawValue: appearanceModeRaw) ?? .system
@@ -46,22 +55,22 @@ struct ContentView: View {
     }
 
     var body: some View {
-        TabView {
-            trackingView
-                .tabItem {
-                    Label("Tracking", systemImage: "clock")
-                }
-
-            StatisticsView(viewModel: viewModel)
-                .tabItem {
-                    Label("Statistics", systemImage: "chart.pie.fill")
-                }
-        }
+        trackingView
         .onAppear {
             viewModel.loadData()
         }
         .onReceive(timer) { value in
             viewModel.updateCurrentTime(value)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .active:
+                viewModel.appDidBecomeActive()
+            case .inactive, .background:
+                viewModel.appWillResignActive()
+            @unknown default:
+                viewModel.appWillResignActive()
+            }
         }
         .sheet(
             isPresented: Binding(
@@ -122,12 +131,24 @@ struct ContentView: View {
             )
         }
         .sheet(isPresented: $viewModel.isShowingHistoryPicker) {
-            HistoryDayPickerView(
-                summaries: viewModel.historySummaries,
-                selectedDay: viewModel.selectedDay,
-                onSelectToday: viewModel.selectToday,
-                onSelectDay: viewModel.selectHistoryDay
-            )
+            NavigationStack {
+                MonthlyHeatmapView(
+                    summaries: viewModel.historySummaries,
+                    selectedDay: viewModel.selectedDay,
+                    onSelectToday: {
+                        viewModel.selectToday()
+                        viewModel.closeHistoryPicker()
+                    },
+                    onSelectDay: viewModel.selectHistoryDay
+                )
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close") {
+                            viewModel.closeHistoryPicker()
+                        }
+                    }
+                }
+            }
         }
         .sheet(
             isPresented: Binding(
@@ -150,6 +171,17 @@ struct ContentView: View {
                 onSave: viewModel.saveEditingSession,
                 onDelete: viewModel.deleteEditingSession
             )
+        }
+        .confirmationDialog("Add", isPresented: $isShowingAddOptions, titleVisibility: .visible) {
+            Button("Add New Activity") {
+                viewModel.openAddTaskSheet()
+            }
+
+            Button("Add New Session") {
+                viewModel.openManualSessionTaskPicker()
+            }
+
+            Button("Cancel", role: .cancel) { }
         }
         .overlay(alignment: .bottom) {
             if isShowingSaveConfirmation {
@@ -175,21 +207,21 @@ struct ContentView: View {
                 }
 
             VStack(spacing: 14) {
-                topBar
-                    .padding(.top, 12)
+                topBarPlaceholder
 
                 timelinePager
 
-                taskChips
+                activityChipSection
+                    .padding(.top, 18)
 
                 Spacer()
 
                 if viewModel.isViewingToday {
                     controls
-                        .padding(.bottom, 24)
+                        .padding(.bottom, 64)
                 } else {
                     pastDayControls
-                        .padding(.bottom, 24)
+                        .padding(.bottom, 64)
                 }
             }
             .background {
@@ -201,27 +233,43 @@ struct ContentView: View {
                         }
                 }
             }
+
+            VStack {
+                topBar
+                    .padding(.top, trackingTopBarTopPadding)
+
+                Spacer()
+            }
         }
         .animation(.easeInOut(duration: 0.25), value: viewModel.selectedDay)
     }
 
+    private var topBarPlaceholder: some View {
+        Color.clear
+            .frame(height: trackingTopBarHeight)
+            .padding(.top, trackingTopBarTopPadding)
+    }
+
     private var topBar: some View {
-        ZStack {
+        ZStack(alignment: .center) {
             HStack {
                 appearanceMenu
 
                 Spacer()
             }
+            .frame(height: trackingTopBarHeight, alignment: .center)
 
             dateSelector
                 .overlay(alignment: .trailing) {
                     if !viewModel.isViewingToday {
                         returnToTodayButton
-                            .offset(x: 46)
+                            .offset(x: returnToTodayButtonTrailingOffset)
                     }
                 }
         }
-        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity)
+        .frame(height: trackingTopBarHeight, alignment: .center)
+        .padding(.horizontal, trackingTopBarHorizontalPadding)
     }
 
     private var appearanceMenu: some View {
@@ -354,6 +402,7 @@ struct ContentView: View {
                 }
             }
             .frame(width: pageWidth, height: 390)
+            .padding(.top, 14)
         }
         .frame(maxWidth: .infinity)
         .frame(height: 390)
@@ -368,7 +417,7 @@ struct ContentView: View {
             state: viewModel.isViewingToday ? viewModel.state : .stopped,
             startTime: viewModel.isViewingToday ? viewModel.currentStartTime : nil,
             elapsed: viewModel.isViewingToday ? viewModel.elapsed : 0,
-            displayElapsed: viewModel.timelineDisplayElapsed,
+            displayElapsed: scope == .hour ? viewModel.timelineCountdownDisplay : viewModel.timelineDisplayElapsed,
             currentTime: viewModel.selectedDayCurrentTime,
             showsCurrentTimeWhenEmpty: viewModel.isViewingToday,
             highlightedSessionIDs: viewModel.isViewingToday ? [] : viewModel.highlightedReviewSessionIDs,
@@ -389,7 +438,7 @@ struct ContentView: View {
                     startTrackingButton
 
                     Button {
-                        viewModel.openAddTaskSheet()
+                        isShowingAddOptions = true
                     } label: {
                         Image(systemName: "plus")
                             .font(.system(size: 28, weight: .bold))
@@ -470,6 +519,57 @@ struct ContentView: View {
         }
     }
 
+    private var activityChipSection: some View {
+        Group {
+            if viewModel.isViewingToday, viewModel.state != .stopped, let activeChip = activeActivityChip {
+                centeredActiveActivityChip(activeChip)
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Activities")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, activityHeadingBottomPadding)
+
+                    taskChips
+                }
+            }
+        }
+    }
+
+    private var activeActivityChip: TaskChipItem? {
+        guard let task = viewModel.selectedTask else { return nil }
+
+        return TaskChipItem(
+            id: task.id.uuidString,
+            taskID: task.id,
+            name: task.name,
+            color: task.color
+        )
+    }
+
+    private func centeredActiveActivityChip(_ task: TaskChipItem) -> some View {
+        HStack {
+            Spacer()
+
+            TaskChipView(
+                task: task,
+                isActive: true,
+                allowsLongPress: true,
+                onTap: { },
+                onLongPress: {
+                    guard let editingTask = viewModel.activityForEditing(from: task) else { return }
+
+                    viewModel.editTask(editingTask)
+                }
+            )
+
+            Spacer()
+        }
+        .padding(.top, 26)
+        .padding(.bottom, 0)
+    }
+
     private var taskChips: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
@@ -481,7 +581,7 @@ struct ContentView: View {
                     HStack(spacing: 10) {
                         if !viewModel.isViewingToday {
                             Button {
-                                viewModel.openManualSessionTaskPicker()
+                                isShowingAddOptions = true
                             } label: {
                                 Image(systemName: "plus")
                                     .font(.system(size: 16, weight: .bold))
@@ -499,7 +599,7 @@ struct ContentView: View {
                             TaskChipView(
                                 task: task,
                                 isActive: isActiveTask,
-                                allowsLongPress: viewModel.isViewingToday,
+                                allowsLongPress: true,
                                 onTap: {
                                     if viewModel.handleTaskChipTap(task) {
                                         switchToHourlyPage()
@@ -507,10 +607,7 @@ struct ContentView: View {
                                     }
                                 },
                                 onLongPress: {
-                                    guard viewModel.isViewingToday,
-                                          let taskID = task.taskID,
-                                          let editingTask = viewModel.tasks.first(where: { $0.id == taskID })
-                                    else { return }
+                                    guard let editingTask = viewModel.activityForEditing(from: task) else { return }
 
                                     viewModel.editTask(editingTask)
                                 }
@@ -522,7 +619,8 @@ struct ContentView: View {
                     Color.clear
                         .frame(width: 16)
                 }
-                .padding(.vertical, 8)
+                .padding(.top, viewModel.isViewingToday ? activityChipRowTopPadding : previousDayActivityChipRowTopPadding)
+                .padding(.bottom, 6)
             }
             .onChange(of: viewModel.selectedTaskID) { _, _ in
                 scrollToFirstTask(with: proxy)

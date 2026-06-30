@@ -74,9 +74,15 @@ struct StatisticsView: View {
 
                         Spacer()
 
-                        Text(balanceDuration(Int(summary.duration)))
-                            .font(.body.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text("\(balanceDuration(Int(summary.duration))) / \(balanceDuration(Int(summary.targetDuration)))")
+                                .font(.body.monospacedDigit())
+                                .foregroundStyle(.primary)
+
+                            Text("\(balanceDuration(Int(summary.remainingDuration))) remaining")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
 
                         Text("\(summary.percentage)%")
                             .font(.body.weight(.semibold).monospacedDigit())
