@@ -94,9 +94,12 @@ struct TaskItem: Identifiable, Equatable, Codable {
 }
 
 enum ActivityType: String, CaseIterable, Identifiable, Codable {
+    case none
+    case pain
     case pleasure
     case neutral
-    case pain
+
+    static let allCases: [ActivityType] = [.pain, .neutral, .pleasure]
 
     var id: String {
         rawValue
@@ -104,23 +107,27 @@ enum ActivityType: String, CaseIterable, Identifiable, Codable {
 
     var title: String {
         switch self {
+        case .none:
+            return ""
+        case .pain:
+            return "Pain"
         case .pleasure:
             return "Pleasure"
         case .neutral:
             return "Neutral"
-        case .pain:
-            return "Pain"
         }
+    }
+
+    var usesDailyTarget: Bool {
+        self == .pain || self == .neutral || self == .pleasure
     }
 
     var dailyTargetDuration: TimeInterval {
         switch self {
-        case .pleasure:
-            return 21_600
-        case .neutral:
-            return 43_200
-        case .pain:
-            return 21_600
+        case .none:
+            return 0
+        case .pain, .neutral, .pleasure:
+            return 14_400
         }
     }
 
@@ -129,12 +136,14 @@ enum ActivityType: String, CaseIterable, Identifiable, Codable {
         let rawValue = try container.decode(String.self)
 
         switch rawValue {
+        case Self.none.rawValue:
+            self = .none
+        case Self.pain.rawValue:
+            self = .pain
         case Self.pleasure.rawValue:
             self = .pleasure
         case Self.neutral.rawValue, "rest":
             self = .neutral
-        case Self.pain.rawValue:
-            self = .pain
         default:
             self = .pain
         }
@@ -198,6 +207,8 @@ struct SessionItem: Identifiable, Equatable, Codable {
     var startTime: Date
     var duration: TimeInterval
     var activityType: ActivityType
+    var sessionDescription: String
+    var subActivityIDs: [UUID]
 
     init(
         id: UUID = UUID(),
@@ -205,7 +216,9 @@ struct SessionItem: Identifiable, Equatable, Codable {
         color: StoredColor,
         startTime: Date,
         duration: TimeInterval,
-        activityType: ActivityType = .pain
+        activityType: ActivityType = .pain,
+        sessionDescription: String = "",
+        subActivityIDs: [UUID] = []
     ) {
         self.id = id
         self.taskName = taskName
@@ -213,6 +226,8 @@ struct SessionItem: Identifiable, Equatable, Codable {
         self.startTime = startTime
         self.duration = duration
         self.activityType = activityType
+        self.sessionDescription = sessionDescription
+        self.subActivityIDs = subActivityIDs
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -222,6 +237,8 @@ struct SessionItem: Identifiable, Equatable, Codable {
         case startTime
         case duration
         case activityType
+        case sessionDescription
+        case subActivityIDs
     }
 
     init(from decoder: Decoder) throws {
@@ -233,6 +250,8 @@ struct SessionItem: Identifiable, Equatable, Codable {
         startTime = try container.decode(Date.self, forKey: .startTime)
         duration = try container.decode(TimeInterval.self, forKey: .duration)
         activityType = try container.decodeIfPresent(ActivityType.self, forKey: .activityType) ?? .pain
+        sessionDescription = try container.decodeIfPresent(String.self, forKey: .sessionDescription) ?? ""
+        subActivityIDs = try container.decodeIfPresent([UUID].self, forKey: .subActivityIDs) ?? []
     }
 
     var endTime: Date {

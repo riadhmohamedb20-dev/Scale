@@ -220,6 +220,8 @@ struct StatisticsView: View {
 
     private func color(for activityType: ActivityType) -> Color {
         switch activityType {
+        case .none:
+            return Color.secondary
         case .pleasure:
             return Color(red: 0.76, green: 0.24, blue: 0.86)
         case .neutral:

@@ -155,16 +155,16 @@ struct MonthlyHeatmapView: View {
                 .font(.headline.weight(.bold))
                 .foregroundStyle(.primary)
 
-            Text("Each square represents Pain progress toward the 6-hour daily target.")
+            Text("Each square represents Pain progress toward the 4-hour daily target.")
                 .font(.body)
                 .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 12) {
                 legendRow(color: inactiveColor, title: "No Pain time")
-                legendRow(color: lowActivityColor, title: "Less than 1 h 30 min")
-                legendRow(color: mediumLowActivityColor, title: "1 h 30 min - 2 h 59 min")
-                legendRow(color: mediumActivityColor, title: "3 h - 5 h 59 min")
-                legendRow(color: highActivityColor, title: "6 h or more")
+                legendRow(color: lowActivityColor, title: "Less than 1 h")
+                legendRow(color: mediumLowActivityColor, title: "1 h - 1 h 59 min")
+                legendRow(color: mediumActivityColor, title: "2 h - 3 h 59 min")
+                legendRow(color: highActivityColor, title: "4 h or more")
                 legendRow(color: todayColor, title: "Today")
             }
         }

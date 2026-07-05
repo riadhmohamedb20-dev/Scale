@@ -126,6 +126,7 @@ struct ContentView: View {
         .sheet(isPresented: $viewModel.isShowingTaskPicker) {
             TaskPickerView(
                 tasks: viewModel.orderedTasksForSelectedDay,
+                groupsByType: true,
                 onSelect: { task in
                     if viewModel.selectTaskAndStart(task) {
                         switchToHourlyPage()
@@ -176,9 +177,12 @@ struct ContentView: View {
                 taskColor: $viewModel.editingSessionTaskColor,
                 startTime: $viewModel.editingSessionStartTime,
                 endTime: $viewModel.editingSessionEndTime,
+                sessionDescription: $viewModel.editingSessionDescription,
+                subActivityIDs: $viewModel.editingSessionSubActivityIDs,
                 title: viewModel.editingSessionTitle,
                 showsDeleteButton: viewModel.shouldShowEditingSessionDeleteButton,
                 dateRange: viewModel.editingSessionDateRange,
+                activities: viewModel.tasks,
                 onSave: viewModel.saveEditingSession,
                 onDelete: viewModel.deleteEditingSession
             )
@@ -998,34 +1002,40 @@ private struct TaskChipView: View {
 
 private struct TaskPickerView: View {
     let tasks: [TaskItem]
+    var groupsByType = false
     let onSelect: (TaskItem) -> Void
     let onCancel: () -> Void
 
     var body: some View {
         NavigationStack {
             List {
+                if groupsByType {
+                    Text("An activity’s type depends on how it feels before and during it, and it can change over time.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 10, trailing: 20))
+                }
+
                 if tasks.isEmpty {
                     Text("No activities yet")
                         .foregroundStyle(.secondary)
+                } else if groupsByType {
+                    ForEach(groupedSections) { section in
+                        Section {
+                            ForEach(section.tasks) { task in
+                                taskRow(task)
+                            }
+                        } header: {
+                            Text(section.title)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 } else {
                     ForEach(tasks) { task in
-                        Button {
-                            onSelect(task)
-                        } label: {
-                            HStack(spacing: 12) {
-                                Circle()
-                                    .fill(task.color.color)
-                                    .frame(width: 14, height: 14)
-
-                                Text(task.name)
-                                    .font(.body.weight(.semibold))
-                                    .foregroundStyle(.primary)
-
-                                Spacer()
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
+                        taskRow(task)
                     }
                 }
             }
@@ -1035,6 +1045,56 @@ private struct TaskPickerView: View {
                     Button("Cancel", action: onCancel)
                 }
             }
+        }
+    }
+
+    private var groupedSections: [TaskPickerSection] {
+        TaskPickerSection.groupOrder.compactMap { activityType in
+            let groupedTasks = tasks.filter { $0.activityType == activityType }
+            guard !groupedTasks.isEmpty else { return nil }
+
+            return TaskPickerSection(activityType: activityType, tasks: groupedTasks)
+        }
+    }
+
+    private func taskRow(_ task: TaskItem) -> some View {
+        Button {
+            onSelect(task)
+        } label: {
+            HStack(spacing: 12) {
+                Circle()
+                    .fill(task.color.color)
+                    .frame(width: 14, height: 14)
+
+                Text(task.name)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.primary)
+
+                Spacer()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct TaskPickerSection: Identifiable {
+    static let groupOrder: [ActivityType] = [.pain, .neutral, .pleasure, .none]
+
+    var activityType: ActivityType
+    var tasks: [TaskItem]
+
+    var id: String {
+        activityType.rawValue
+    }
+
+    var title: String {
+        switch activityType {
+        case .none:
+            return "None"
+        default:
+            return activityType.title
         }
     }
 }

@@ -17,12 +17,14 @@ final class TimeCircleViewModel: ObservableObject {
     @Published var newTaskName = ""
     @Published var newTaskColor: Color = StoredColor.blue.color
     @Published var newTaskDescription = ""
-    @Published var newTaskType: ActivityType = .pain
+    @Published var newTaskType: ActivityType = .none
     @Published var editingSessionTaskName = ""
     @Published var editingSessionTaskColor: Color = StoredColor.blue.color
     @Published var editingSessionActivityType: ActivityType = .pain
     @Published var editingSessionStartTime = Date()
     @Published var editingSessionEndTime = Date()
+    @Published var editingSessionDescription = ""
+    @Published var editingSessionSubActivityIDs: [UUID] = []
     @Published var selectedDay = Calendar.current.startOfDay(for: Date())
     @Published var isShowingHistoryPicker = false
     @Published var state: TrackingState = .stopped
@@ -235,7 +237,7 @@ final class TimeCircleViewModel: ObservableObject {
                 .last
         else { return nil }
 
-        return TaskItem(name: selectedReviewTaskName, color: latestSession.color)
+        return TaskItem(name: selectedReviewTaskName, color: latestSession.color, activityType: latestSession.activityType)
     }
 
     var timelineDisplayElapsed: TimeInterval {
@@ -250,8 +252,8 @@ final class TimeCircleViewModel: ObservableObject {
 
     var timelineCountdownDisplay: TimeInterval {
         guard isViewingToday, state != .stopped, let selectedTask else { return 0 }
-        guard selectedTask.activityType != .neutral else {
-            return selectedTaskTrackedTimeForSelectedDay + elapsed
+        guard selectedTask.activityType.usesDailyTarget else {
+            return elapsed
         }
 
         return remainingTimeToday(for: selectedTask.activityType) - elapsed
@@ -266,7 +268,7 @@ final class TimeCircleViewModel: ObservableObject {
                       let clippedSession = clippedSession(session, to: dayInterval)
                 else { continue }
 
-                groupedSessions[day, default: []].append(clippedSession)
+                groupedSessions[day, default: []].append(sessionWithCurrentActivityType(clippedSession))
             }
         }
 
@@ -517,12 +519,16 @@ final class TimeCircleViewModel: ObservableObject {
         editingSessionActivityType = originalSession.activityType
         editingSessionStartTime = originalSession.startTime
         editingSessionEndTime = originalSession.endTime
+        editingSessionDescription = originalSession.sessionDescription
+        editingSessionSubActivityIDs = originalSession.subActivityIDs
     }
 
     func closeSessionEditor() {
         let closedSessionID = editingSessionID
         editingSessionID = nil
         isAddingManualSession = false
+        editingSessionDescription = ""
+        editingSessionSubActivityIDs = []
         selectedSessionID = nil
 
         if isViewingToday {
@@ -561,6 +567,8 @@ final class TimeCircleViewModel: ObservableObject {
         sessions[editingSessionIndex].activityType = editingSessionActivityType
         sessions[editingSessionIndex].startTime = editingSessionStartTime
         sessions[editingSessionIndex].duration = editingSessionEndTime.timeIntervalSince(editingSessionStartTime)
+        sessions[editingSessionIndex].sessionDescription = editingSessionDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        sessions[editingSessionIndex].subActivityIDs = validSubActivityIDs(for: editingSessionActivityType)
         saveData()
         closeSessionEditor()
     }
@@ -576,7 +584,9 @@ final class TimeCircleViewModel: ObservableObject {
                 color: StoredColor(from: editingSessionTaskColor),
                 startTime: editingSessionStartTime,
                 duration: editingSessionEndTime.timeIntervalSince(editingSessionStartTime),
-                activityType: editingSessionActivityType
+                activityType: editingSessionActivityType,
+                sessionDescription: editingSessionDescription.trimmingCharacters(in: .whitespacesAndNewlines),
+                subActivityIDs: validSubActivityIDs(for: editingSessionActivityType)
             )
         )
 
@@ -586,13 +596,15 @@ final class TimeCircleViewModel: ObservableObject {
         saveData()
         editingSessionID = nil
         isAddingManualSession = false
+        editingSessionDescription = ""
+        editingSessionSubActivityIDs = []
     }
 
     func openAddTaskSheet() {
         newTaskName = ""
         newTaskColor = randomTaskColor().color
         newTaskDescription = ""
-        newTaskType = .pain
+        newTaskType = .none
         isAddingTask = true
     }
 
@@ -631,6 +643,8 @@ final class TimeCircleViewModel: ObservableObject {
         editingSessionActivityType = task.activityType
         editingSessionStartTime = dayStart
         editingSessionEndTime = defaultEnd
+        editingSessionDescription = ""
+        editingSessionSubActivityIDs = []
         isAddingManualSession = true
         closeManualSessionTaskPicker()
     }
@@ -826,7 +840,7 @@ final class TimeCircleViewModel: ObservableObject {
         newTaskName = ""
         newTaskColor = randomTaskColor().color
         newTaskDescription = ""
-        newTaskType = .pain
+        newTaskType = .none
         resetCurrentTracking()
         saveData()
         closeAddTaskSheet()
@@ -937,7 +951,7 @@ final class TimeCircleViewModel: ObservableObject {
         guard let interval else { return 0 }
 
         return clippedSessions(overlapping: interval)
-            .filter { $0.activityType == activityType }
+            .filter { currentActivityType(for: $0) == activityType }
             .reduce(0) { $0 + $1.duration }
     }
 
@@ -969,7 +983,26 @@ final class TimeCircleViewModel: ObservableObject {
             color: session.color,
             startTime: clippedStart,
             duration: clippedEnd.timeIntervalSince(clippedStart),
-            activityType: session.activityType
+            activityType: session.activityType,
+            sessionDescription: session.sessionDescription,
+            subActivityIDs: session.subActivityIDs
+        )
+    }
+
+    private func currentActivityType(for session: SessionItem) -> ActivityType {
+        tasks.first { $0.name == session.taskName }?.activityType ?? session.activityType
+    }
+
+    private func sessionWithCurrentActivityType(_ session: SessionItem) -> SessionItem {
+        SessionItem(
+            id: session.id,
+            taskName: session.taskName,
+            color: session.color,
+            startTime: session.startTime,
+            duration: session.duration,
+            activityType: currentActivityType(for: session),
+            sessionDescription: session.sessionDescription,
+            subActivityIDs: session.subActivityIDs
         )
     }
 
@@ -1041,6 +1074,29 @@ final class TimeCircleViewModel: ObservableObject {
         let task = tasks.remove(at: index)
         tasks.insert(task, at: 0)
         saveData()
+    }
+
+    private func validSubActivityIDs(for mainActivityType: ActivityType) -> [UUID] {
+        let allowedIDs = Set(
+            tasks
+                .filter { isSubActivity($0, allowedFor: mainActivityType) }
+                .map(\.id)
+        )
+
+        return editingSessionSubActivityIDs.filter { allowedIDs.contains($0) }
+    }
+
+    private func isSubActivity(_ task: TaskItem, allowedFor mainActivityType: ActivityType) -> Bool {
+        switch mainActivityType {
+        case .pain:
+            return task.activityType == .pain
+        case .pleasure:
+            return task.activityType == .pleasure
+        case .neutral:
+            return task.activityType == .pain || task.activityType == .pleasure
+        case .none:
+            return task.activityType != .none
+        }
     }
 
     private func markTaskInteraction(_ taskID: UUID) {

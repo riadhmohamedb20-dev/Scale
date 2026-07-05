@@ -20,14 +20,7 @@ struct EditTaskView: View {
                 }
 
                 Section {
-                    Picker("Activity type", selection: $taskType) {
-                        ForEach(ActivityType.allCases) { type in
-                            Text(type.title)
-                                .tag(type)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .controlSize(.large)
+                    ActivityTypeSelector(selection: $taskType)
                     .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 2, trailing: 0))
                     .listRowBackground(Color.clear)
                 } header: {
