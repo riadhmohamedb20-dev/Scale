@@ -29,10 +29,13 @@ final class TimeCircleViewModel: ObservableObject {
     @Published var isShowingHistoryPicker = false
     @Published var state: TrackingState = .stopped
     @Published var now = Date()
+    @Published var isShowingNoFuelAlert = false
+    @Published var noFuelAlertMessage = ""
 
     private var startTime: Date?
     private var runningStartTime: Date?
     private var elapsedBeforePause: TimeInterval = 0
+    private var completedActiveIntervals: [ActiveTrackingInterval] = []
     private var recentTaskInteractionDates: [UUID: Date] = [:]
 
     var selectedIndex: Int? {
@@ -102,6 +105,24 @@ final class TimeCircleViewModel: ObservableObject {
 
     var currentStartTime: Date? {
         startTime
+    }
+
+    var currentActiveIntervals: [DateInterval] {
+        guard state != .stopped else { return [] }
+
+        var intervals = completedActiveIntervals.compactMap { interval -> DateInterval? in
+            guard interval.end > interval.start else { return nil }
+            return DateInterval(start: interval.start, end: interval.end)
+        }
+
+        if state == .running, let runningStartTime {
+            let intervalEnd = max(now, runningStartTime)
+            if intervalEnd > runningStartTime {
+                intervals.append(DateInterval(start: runningStartTime, end: intervalEnd))
+            }
+        }
+
+        return intervals
     }
 
     var isViewingToday: Bool {
@@ -252,11 +273,16 @@ final class TimeCircleViewModel: ObservableObject {
 
     var timelineCountdownDisplay: TimeInterval {
         guard isViewingToday, state != .stopped, let selectedTask else { return 0 }
+
+        if selectedTask.activityType == .neutral {
+            return trackedTime(for: .neutral, in: elapsedTodayInterval) + elapsed
+        }
+
         guard selectedTask.activityType.usesDailyTarget else {
             return elapsed
         }
 
-        return remainingTimeToday(for: selectedTask.activityType) - elapsed
+        return targetBalanceToday(for: selectedTask.activityType, runningElapsed: elapsed)
     }
 
     var historySummaries: [DayHistorySummary] {
@@ -385,6 +411,7 @@ final class TimeCircleViewModel: ObservableObject {
         }
 
         ensureValidActiveTrackingState()
+        enforceFuelLimitIfNeeded()
     }
 
     func appWillResignActive() {
@@ -412,13 +439,21 @@ final class TimeCircleViewModel: ObservableObject {
 
     func startTaskFromChip(_ task: TaskItem) -> Bool {
         guard state == .stopped, isViewingToday else { return false }
+        guard hasFuelAvailableToStart(task) else {
+            showNoFuelAlert(for: task.activityType)
+            return false
+        }
 
         moveTaskToFront(task.id)
         selectedTaskID = task.id
         selectedReviewTaskName = nil
         highlightedReviewSessionIDs = []
         selectedSessionID = nil
-        start()
+        guard start() else {
+            selectedTaskID = nil
+            return false
+        }
+
         return true
     }
 
@@ -657,12 +692,16 @@ final class TimeCircleViewModel: ObservableObject {
             return false
         }
 
-        start()
-        return true
+        return start()
     }
 
     func selectTaskAndStart(_ task: TaskItem) -> Bool {
         guard state == .stopped, isViewingToday else { return false }
+        guard hasFuelAvailableToStart(task) else {
+            closeTaskPicker()
+            showNoFuelAlert(for: task.activityType)
+            return false
+        }
 
         moveTaskToFront(task.id)
         selectedTaskID = task.id
@@ -671,7 +710,11 @@ final class TimeCircleViewModel: ObservableObject {
         selectedSessionID = nil
         resetCurrentTracking()
         closeTaskPicker()
-        start()
+        guard start() else {
+            selectedTaskID = nil
+            return false
+        }
+
         return true
     }
 
@@ -755,8 +798,13 @@ final class TimeCircleViewModel: ObservableObject {
         syncLiveActivityIfNeeded()
     }
 
-    func start() {
-        guard let selectedTaskID, selectedTask != nil else { return }
+    @discardableResult
+    func start() -> Bool {
+        guard let selectedTaskID, let selectedTask else { return false }
+        guard hasFuelAvailableToStart(selectedTask) else {
+            showNoFuelAlert(for: selectedTask.activityType)
+            return false
+        }
 
         selectedSessionID = nil
         markTaskInteraction(selectedTaskID)
@@ -765,16 +813,24 @@ final class TimeCircleViewModel: ObservableObject {
         startTime = date
         runningStartTime = date
         elapsedBeforePause = 0
+        completedActiveIntervals = []
         state = .running
         persistActiveTrackingState()
         syncLiveActivityIfNeeded()
+        return true
     }
 
     func pause() {
         guard state == .running else { return }
 
+        let pauseDate = Date()
         if let runningStartTime {
-            elapsedBeforePause += Date().timeIntervalSince(runningStartTime)
+            elapsedBeforePause += pauseDate.timeIntervalSince(runningStartTime)
+            if pauseDate > runningStartTime {
+                completedActiveIntervals.append(
+                    ActiveTrackingInterval(start: runningStartTime, end: pauseDate)
+                )
+            }
         }
 
         runningStartTime = nil
@@ -783,17 +839,30 @@ final class TimeCircleViewModel: ObservableObject {
         syncLiveActivityIfNeeded()
     }
 
-    func resume() {
-        guard state == .paused else { return }
+    @discardableResult
+    func resume() -> Bool {
+        guard state == .paused else { return false }
+        guard let selectedTask else { return false }
+        guard hasFuelAvailableToResume(selectedTask) else {
+            finishCurrentSessionAtFuelLimit(for: selectedTask)
+            return false
+        }
 
         runningStartTime = Date()
         state = .running
         persistActiveTrackingState()
         syncLiveActivityIfNeeded()
+        return true
     }
 
-    func togglePauseResume() {
-        state == .running ? pause() : resume()
+    @discardableResult
+    func togglePauseResume() -> Bool {
+        if state == .running {
+            pause()
+            return true
+        }
+
+        return resume()
     }
 
     func stopAndSave() {
@@ -802,15 +871,29 @@ final class TimeCircleViewModel: ObservableObject {
             return
         }
 
-        sessions.append(
-            SessionItem(
-                taskName: selectedTask.name,
-                color: selectedTask.color,
-                startTime: startTime,
-                duration: max(elapsed, 1),
-                activityType: selectedTask.activityType
-            )
+        let intervals = activeIntervalsForSaving(endingAt: Date())
+        let allowedDuration = selectedTask.activityType.usesDailyTarget
+            ? remainingFuelToday(for: selectedTask.activityType)
+            : intervals.reduce(0) { $0 + $1.end.timeIntervalSince($1.start) }
+        let clippedIntervals = clippedActiveIntervals(intervals, maxDuration: allowedDuration)
+        let savedSessions = sessionItems(
+            from: clippedIntervals,
+            task: selectedTask
         )
+
+        if savedSessions.isEmpty, intervals.isEmpty, elapsed > 0 {
+            sessions.append(
+                SessionItem(
+                    taskName: selectedTask.name,
+                    color: selectedTask.color,
+                    startTime: startTime,
+                    duration: max(elapsed, 1),
+                    activityType: selectedTask.activityType
+                )
+            )
+        } else {
+            sessions.append(contentsOf: savedSessions)
+        }
 
         saveData()
         resetCurrentTracking()
@@ -899,6 +982,7 @@ final class TimeCircleViewModel: ObservableObject {
         startTime = nil
         runningStartTime = nil
         elapsedBeforePause = 0
+        completedActiveIntervals = []
         TimeCircleStorage.clearActiveTrackingState()
         endLiveActivity()
     }
@@ -955,11 +1039,135 @@ final class TimeCircleViewModel: ObservableObject {
             .reduce(0) { $0 + $1.duration }
     }
 
-    private func remainingTimeToday(for activityType: ActivityType) -> TimeInterval {
-        activityType.dailyTargetDuration - trackedTime(
-            for: activityType,
-            in: elapsedTodayInterval
+    private func totalFuelDuration(for activityType: ActivityType) -> TimeInterval {
+        activityType.dailyTargetDuration + activityType.reserveDuration
+    }
+
+    private func remainingFuelToday(for activityType: ActivityType) -> TimeInterval {
+        guard activityType.usesDailyTarget else { return .infinity }
+
+        let trackedDuration = trackedTime(for: activityType, in: elapsedTodayInterval)
+        return max(totalFuelDuration(for: activityType) - trackedDuration, 0)
+    }
+
+    private func hasFuelAvailableToStart(_ task: TaskItem) -> Bool {
+        guard task.activityType.usesDailyTarget else { return true }
+
+        return remainingFuelToday(for: task.activityType) > 0
+    }
+
+    private func hasFuelAvailableToResume(_ task: TaskItem) -> Bool {
+        guard task.activityType.usesDailyTarget else { return true }
+
+        return elapsed < remainingFuelToday(for: task.activityType)
+    }
+
+    private func enforceFuelLimitIfNeeded() {
+        guard state == .running,
+              let selectedTask,
+              selectedTask.activityType.usesDailyTarget,
+              elapsed >= remainingFuelToday(for: selectedTask.activityType)
+        else { return }
+
+        finishCurrentSessionAtFuelLimit(for: selectedTask)
+    }
+
+    private func finishCurrentSessionAtFuelLimit(for task: TaskItem) {
+        let allowedDuration = remainingFuelToday(for: task.activityType)
+        let clippedIntervals = clippedActiveIntervals(
+            activeIntervalsForSaving(endingAt: now),
+            maxDuration: allowedDuration
         )
+        let savedSessions = sessionItems(from: clippedIntervals, task: task)
+
+        if !savedSessions.isEmpty {
+            sessions.append(contentsOf: savedSessions)
+            saveData()
+        }
+
+        resetCurrentTracking()
+        selectedTaskID = nil
+        selectedReviewTaskName = nil
+        highlightedReviewSessionIDs = []
+        selectedSessionID = nil
+        showNoFuelAlert(for: task.activityType)
+    }
+
+    private func showNoFuelAlert(for activityType: ActivityType) {
+        guard activityType.usesDailyTarget else { return }
+
+        noFuelAlertMessage = "You’ve used all your \(activityType.title) time for today."
+        isShowingNoFuelAlert = true
+    }
+
+    private func activeIntervalsForSaving(endingAt endDate: Date) -> [ActiveTrackingInterval] {
+        var intervals = completedActiveIntervals.filter { $0.end > $0.start }
+
+        if state == .running, let runningStartTime {
+            let intervalEnd = max(endDate, runningStartTime)
+            if intervalEnd > runningStartTime {
+                intervals.append(ActiveTrackingInterval(start: runningStartTime, end: intervalEnd))
+            }
+        }
+
+        return intervals.sorted { $0.start < $1.start }
+    }
+
+    private func clippedActiveIntervals(
+        _ intervals: [ActiveTrackingInterval],
+        maxDuration: TimeInterval
+    ) -> [ActiveTrackingInterval] {
+        guard maxDuration > 0 else { return [] }
+
+        var remainingDuration = maxDuration
+        var clippedIntervals: [ActiveTrackingInterval] = []
+
+        for interval in intervals where remainingDuration > 0 {
+            let intervalDuration = interval.end.timeIntervalSince(interval.start)
+            guard intervalDuration > 0 else { continue }
+
+            let clippedDuration = min(intervalDuration, remainingDuration)
+            let clippedEnd = interval.start.addingTimeInterval(clippedDuration)
+            if clippedEnd > interval.start {
+                clippedIntervals.append(ActiveTrackingInterval(start: interval.start, end: clippedEnd))
+            }
+            remainingDuration -= clippedDuration
+        }
+
+        return clippedIntervals
+    }
+
+    private func sessionItems(
+        from intervals: [ActiveTrackingInterval],
+        task: TaskItem
+    ) -> [SessionItem] {
+        intervals.compactMap { interval in
+            let duration = interval.end.timeIntervalSince(interval.start)
+            guard duration > 0 else { return nil }
+
+            return SessionItem(
+                taskName: task.name,
+                color: task.color,
+                startTime: interval.start,
+                duration: max(duration, 1),
+                activityType: task.activityType
+            )
+        }
+    }
+
+    private func targetBalanceToday(for activityType: ActivityType, runningElapsed: TimeInterval) -> TimeInterval {
+        let totalTrackedTime = trackedTime(for: activityType, in: elapsedTodayInterval) + runningElapsed
+
+        if totalTrackedTime < activityType.dailyTargetDuration {
+            return activityType.dailyTargetDuration - totalTrackedTime
+        }
+
+        let reserveElapsed = totalTrackedTime - activityType.dailyTargetDuration
+        if reserveElapsed < activityType.reserveDuration {
+            return activityType.reserveDuration - reserveElapsed
+        }
+
+        return 0
     }
 
     private var elapsedTodayInterval: DateInterval? {
@@ -1125,7 +1333,8 @@ final class TimeCircleViewModel: ObservableObject {
                 startTime: startTime,
                 runningStartTime: runningStartTime,
                 elapsedBeforePause: elapsedBeforePause,
-                isPaused: state == .paused
+                isPaused: state == .paused,
+                activeIntervals: completedActiveIntervals
             )
         )
     }
@@ -1147,6 +1356,7 @@ final class TimeCircleViewModel: ObservableObject {
         selectedSessionID = nil
         startTime = storedState.startTime
         elapsedBeforePause = max(storedState.elapsedBeforePause, 0)
+        completedActiveIntervals = restoredActiveIntervals(from: storedState)
 
         if storedState.isPaused {
             state = .paused
@@ -1158,6 +1368,21 @@ final class TimeCircleViewModel: ObservableObject {
 
         persistActiveTrackingState()
         syncLiveActivityIfNeeded()
+    }
+
+    private func restoredActiveIntervals(from storedState: ActiveTrackingState) -> [ActiveTrackingInterval] {
+        if !storedState.activeIntervals.isEmpty {
+            return storedState.activeIntervals.filter { $0.end > $0.start }
+        }
+
+        guard storedState.elapsedBeforePause > 0 else { return [] }
+
+        return [
+            ActiveTrackingInterval(
+                start: storedState.startTime,
+                end: storedState.startTime.addingTimeInterval(storedState.elapsedBeforePause)
+            )
+        ]
     }
 
     private func syncLiveActivityIfNeeded() {

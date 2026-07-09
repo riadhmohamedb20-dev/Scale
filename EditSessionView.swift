@@ -84,9 +84,11 @@ struct EditSessionView: View {
                             .frame(minHeight: 96)
                     }
                 }
-
+            }
+            .navigationTitle(title)
+            .toolbar {
                 if showsDeleteButton {
-                    Section {
+                    ToolbarItem(placement: .cancellationAction) {
                         Button(role: .destructive) {
                             isShowingDeleteConfirmation = true
                         } label: {
@@ -94,9 +96,7 @@ struct EditSessionView: View {
                         }
                     }
                 }
-            }
-            .navigationTitle(title)
-            .toolbar {
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         onSave()

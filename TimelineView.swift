@@ -12,6 +12,7 @@ struct TimelineView: View {
     var selectedSessionID: UUID?
     var state: TrackingState
     var startTime: Date?
+    var activeIntervals: [DateInterval] = []
     var elapsed: TimeInterval
     var displayElapsed: TimeInterval
     var currentTime: Date
@@ -89,14 +90,16 @@ struct TimelineView: View {
                 }
             }
 
-            if state != .stopped, let task, let liveSector {
-                RingSectorShape(
-                    startAngle: .degrees(liveSector.startAngle - 90),
-                    endAngle: .degrees(liveSector.startAngle + max(liveSector.degrees, 0.5) - 90),
-                    outerRadius: outerRadius,
-                    innerRadius: innerRadius
-                )
-                .fill(task.color.color)
+            if state != .stopped, let task {
+                ForEach(Array(liveSectors.enumerated()), id: \.offset) { _, liveSector in
+                    RingSectorShape(
+                        startAngle: .degrees(liveSector.startAngle - 90),
+                        endAngle: .degrees(liveSector.startAngle + max(liveSector.degrees, 0.5) - 90),
+                        outerRadius: outerRadius,
+                        innerRadius: innerRadius
+                    )
+                    .fill(task.color.color)
+                }
             }
 
             Circle()
@@ -252,6 +255,36 @@ struct TimelineView: View {
             let endTime = startTime.addingTimeInterval(elapsed)
             let clippedStart = max(startTime, hourInterval.start)
             let clippedEnd = min(endTime, hourInterval.end)
+            guard clippedEnd > clippedStart else { return nil }
+
+            return (
+                angleForDate(clippedStart),
+                clippedEnd.timeIntervalSince(clippedStart) / 3600 * 360
+            )
+        }
+    }
+
+    private var liveSectors: [(startAngle: Double, degrees: Double)] {
+        let intervalSectors = activeIntervals.compactMap(liveSector)
+        if !intervalSectors.isEmpty {
+            return intervalSectors
+        }
+
+        return liveSector.map { [$0] } ?? []
+    }
+
+    private func liveSector(for interval: DateInterval) -> (startAngle: Double, degrees: Double)? {
+        switch scope {
+        case .day:
+            return (
+                angleForDate(interval.start),
+                interval.duration / 86400 * 360
+            )
+        case .hour:
+            guard let hourInterval else { return nil }
+
+            let clippedStart = max(interval.start, hourInterval.start)
+            let clippedEnd = min(interval.end, hourInterval.end)
             guard clippedEnd > clippedStart else { return nil }
 
             return (

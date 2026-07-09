@@ -244,6 +244,11 @@ struct ContentView: View {
         } message: {
             Text("Your activities and sessions were restored.")
         }
+        .alert("No fuel for today", isPresented: $viewModel.isShowingNoFuelAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(viewModel.noFuelAlertMessage)
+        }
         #if canImport(UIKit)
         .sheet(isPresented: $isShowingBackupShareSheet) {
             if let backupExportURL {
@@ -486,6 +491,7 @@ struct ContentView: View {
             selectedSessionID: viewModel.selectedSessionID,
             state: viewModel.isViewingToday ? viewModel.state : .stopped,
             startTime: viewModel.isViewingToday ? viewModel.currentStartTime : nil,
+            activeIntervals: viewModel.isViewingToday ? viewModel.currentActiveIntervals : [],
             elapsed: viewModel.isViewingToday ? viewModel.elapsed : 0,
             displayElapsed: scope == .hour ? viewModel.timelineCountdownDisplay : viewModel.timelineDisplayElapsed,
             currentTime: viewModel.selectedDayCurrentTime,
@@ -524,7 +530,7 @@ struct ContentView: View {
                 HStack(spacing: 34) {
                     Button {
                         let wasRunning = viewModel.state == .running
-                        viewModel.togglePauseResume()
+                        guard viewModel.togglePauseResume() else { return }
                         if wasRunning {
                             switchToDayPage()
                         } else {
@@ -795,6 +801,7 @@ struct ContentView: View {
             selectedSessionID: viewModel.selectedSessionID,
             state: viewModel.isViewingToday ? viewModel.state : .stopped,
             startTime: viewModel.isViewingToday ? viewModel.currentStartTime : nil,
+            activeIntervals: viewModel.isViewingToday ? viewModel.currentActiveIntervals : [],
             elapsed: viewModel.isViewingToday ? viewModel.elapsed : 0,
             displayElapsed: viewModel.selectedTaskDisplayElapsed,
             currentTime: viewModel.selectedDayCurrentTime,
@@ -1028,7 +1035,7 @@ private struct TaskPickerView: View {
                                 taskRow(task)
                             }
                         } header: {
-                            Text(section.title)
+                            Text(section.headerTitle)
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
                         }
@@ -1095,6 +1102,15 @@ private struct TaskPickerSection: Identifiable {
             return "None"
         default:
             return activityType.title
+        }
+    }
+
+    var headerTitle: String {
+        switch activityType {
+        case .pain:
+            return "Pain: Activities related to a future project or path."
+        default:
+            return title
         }
     }
 }

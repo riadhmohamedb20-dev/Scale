@@ -119,15 +119,24 @@ enum ActivityType: String, CaseIterable, Identifiable, Codable {
     }
 
     var usesDailyTarget: Bool {
-        self == .pain || self == .neutral || self == .pleasure
+        self == .pain || self == .pleasure
     }
 
     var dailyTargetDuration: TimeInterval {
         switch self {
-        case .none:
+        case .none, .neutral:
             return 0
-        case .pain, .neutral, .pleasure:
+        case .pain, .pleasure:
             return 14_400
+        }
+    }
+
+    var reserveDuration: TimeInterval {
+        switch self {
+        case .pain, .pleasure:
+            return 7_200
+        case .none, .neutral:
+            return 0
         }
     }
 
@@ -347,6 +356,48 @@ struct ActiveTrackingState: Codable, Equatable {
     var runningStartTime: Date?
     var elapsedBeforePause: TimeInterval
     var isPaused: Bool
+    var activeIntervals: [ActiveTrackingInterval]
+
+    init(
+        taskID: UUID,
+        startTime: Date,
+        runningStartTime: Date?,
+        elapsedBeforePause: TimeInterval,
+        isPaused: Bool,
+        activeIntervals: [ActiveTrackingInterval] = []
+    ) {
+        self.taskID = taskID
+        self.startTime = startTime
+        self.runningStartTime = runningStartTime
+        self.elapsedBeforePause = elapsedBeforePause
+        self.isPaused = isPaused
+        self.activeIntervals = activeIntervals
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case taskID
+        case startTime
+        case runningStartTime
+        case elapsedBeforePause
+        case isPaused
+        case activeIntervals
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        taskID = try container.decode(UUID.self, forKey: .taskID)
+        startTime = try container.decode(Date.self, forKey: .startTime)
+        runningStartTime = try container.decodeIfPresent(Date.self, forKey: .runningStartTime)
+        elapsedBeforePause = try container.decode(TimeInterval.self, forKey: .elapsedBeforePause)
+        isPaused = try container.decode(Bool.self, forKey: .isPaused)
+        activeIntervals = try container.decodeIfPresent([ActiveTrackingInterval].self, forKey: .activeIntervals) ?? []
+    }
+}
+
+struct ActiveTrackingInterval: Codable, Equatable {
+    var start: Date
+    var end: Date
 }
 
 enum TimeCircleFormat {
