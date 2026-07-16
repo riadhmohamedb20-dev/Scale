@@ -1,19 +1,17 @@
 import SwiftUI
 
-struct ActivityTypeSelector: View {
-    @Binding var selection: ActivityType?
-
-    private static let selectableTypes: [ActivityType] = [.pain, .pleasure]
+struct PrioritySelector: View {
+    @Binding var selection: ActivityPriority?
 
     var body: some View {
         HStack(spacing: 4) {
-            ForEach(Self.selectableTypes) { type in
-                let isSelected = selection == type
+            ForEach(ActivityPriority.allCases) { priorityOption in
+                let isSelected = selection == priorityOption
 
                 Button {
-                    selection = isSelected ? nil : type
+                    selection = priorityOption
                 } label: {
-                    Text(type.title)
+                    Text(priorityOption.title)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(isSelected ? Color.white : Color.primary)
                         .frame(maxWidth: .infinity)

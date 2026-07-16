@@ -274,7 +274,7 @@ struct MonthlyHeatmapView: View {
     }
 
     private func painProgress(on day: Date) -> Double {
-        min(max(painDuration(on: day) / ActivityType.pain.dailyTargetDuration, 0), 1)
+        min(max(painDuration(on: day) / ActivityType.pain.totalDailyBudgetDuration, 0), 1)
     }
 
     private func heatmapDayKind(for day: Date, in monthInterval: DateInterval) -> HeatmapDay.Kind {

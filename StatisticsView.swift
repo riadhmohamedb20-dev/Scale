@@ -224,8 +224,6 @@ struct StatisticsView: View {
             return Color.secondary
         case .pleasure:
             return Color(red: 0.76, green: 0.24, blue: 0.86)
-        case .neutral:
-            return Color(red: 0.56, green: 0.56, blue: 0.58)
         case .pain:
             return Color(red: 1.0, green: 0.23, blue: 0.19)
         }

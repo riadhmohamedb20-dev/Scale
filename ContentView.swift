@@ -32,7 +32,7 @@ struct ContentView: View {
     private let activityHeadingBottomPadding: CGFloat = -4
     private let activityChipRowTopPadding: CGFloat = 18
     private let previousDayActivityChipRowTopPadding: CGFloat = 8
-    private let trackingTopBarTopPadding: CGFloat = 2
+    private let trackingTopBarTopPadding: CGFloat = 0
     private let trackingTopBarHeight: CGFloat = 36
     private let trackingTopBarHorizontalPadding: CGFloat = 16
     private let returnToTodayButtonTrailingOffset: CGFloat = 46
@@ -110,6 +110,10 @@ struct ContentView: View {
                     get: { viewModel.editingTaskType },
                     set: viewModel.updateEditingTaskType
                 ),
+                taskPriority: Binding(
+                    get: { viewModel.editingTaskPriority },
+                    set: viewModel.updateEditingTaskPriority
+                ),
                 onDone: viewModel.closeTaskEditor,
                 onDelete: viewModel.deleteEditingTask
             )
@@ -120,6 +124,7 @@ struct ContentView: View {
                 taskColor: $viewModel.newTaskColor,
                 taskDescription: $viewModel.newTaskDescription,
                 taskType: $viewModel.newTaskType,
+                taskPriority: $viewModel.newTaskPriority,
                 onDone: viewModel.addTask
             )
         }
@@ -288,15 +293,17 @@ struct ContentView: View {
                 timelinePager
 
                 activityChipSection
-                    .padding(.top, 18)
+                    .padding(.top, 8)
 
-                Spacer()
+                Spacer(minLength: 16)
 
                 if viewModel.isViewingToday {
                     controls
                 } else {
                     pastDayControls
                 }
+
+                Spacer(minLength: 16)
             }
             .background {
                 if !viewModel.isViewingToday {
@@ -477,7 +484,7 @@ struct ContentView: View {
                 }
             }
             .frame(width: pageWidth, height: 390)
-            .padding(.top, 14)
+            .padding(.top, 4)
         }
         .frame(maxWidth: .infinity)
         .frame(height: 390)
@@ -598,7 +605,11 @@ struct ContentView: View {
     private var activityChipSection: some View {
         Group {
             if viewModel.isViewingToday, viewModel.state != .stopped, let activeChip = activeActivityChip {
-                centeredActiveActivityChip(activeChip)
+                if let activeTask = viewModel.selectedTask, activeTask.activityType != .none {
+                    activeActivityPanel(chip: activeChip, task: activeTask)
+                } else {
+                    centeredActiveActivityChip(activeChip)
+                }
             } else {
                 VStack(alignment: .leading, spacing: 0) {
                     Text("Activities")
@@ -644,6 +655,118 @@ struct ContentView: View {
         }
         .padding(.top, 26)
         .padding(.bottom, 0)
+    }
+
+    private func activeActivityPanel(chip: TaskChipItem, task: TaskItem) -> some View {
+        activityBudgetCard(chip: chip, task: task)
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 0)
+    }
+
+    private func activityBudgetCard(chip: TaskChipItem, task: TaskItem) -> some View {
+        let accentColor = task.color.color
+
+        let dailyRemaining = viewModel.dailyBudgetRemainingToday
+        let dailyTotal = dailyBudgetTotal(for: task)
+        let dailyProgress = dailyTotal > 0 ? min(max(dailyRemaining / dailyTotal, 0), 1) : 0
+
+        let bucketRemaining = viewModel.timelineCountdownDisplay
+        let bucketTotal = currentBucketTotal(for: task)
+        let bucketProgress = bucketTotal > 0 ? min(max(bucketRemaining / bucketTotal, 0), 1) : 0
+        let bucketLabel = "\(task.activityType.title) (\((task.priority ?? .medium).title))"
+
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                ActivityNameLabel(name: chip.name, color: accentColor) {
+                    guard let editingTask = viewModel.activityForEditing(from: chip) else { return }
+
+                    viewModel.editTask(editingTask)
+                }
+                .layoutPriority(1)
+
+                cardDivider
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(task.activityType == .pleasure ? "Level" : "Priority")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+
+                    Text((task.priority ?? .medium).title)
+                        .font(.footnote.weight(.bold))
+                        .foregroundStyle(accentColor)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                cardDivider
+
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text("Left today")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+
+                    Text("\(TimeCircleFormat.budgetRemaining(dailyRemaining)) / \(TimeCircleFormat.budgetTotal(dailyTotal))")
+                        .font(.footnote.weight(.bold).monospacedDigit())
+                        .foregroundStyle(accentColor)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+            }
+
+            BudgetProgressBar(progress: dailyProgress, tint: accentColor)
+                .frame(height: 6)
+
+            if task.activityType == .pain {
+                HStack {
+                    Text(bucketLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+
+                    Spacer(minLength: 8)
+
+                    Text("\(TimeCircleFormat.budgetRemaining(bucketRemaining)) left / \(TimeCircleFormat.budgetTotal(bucketTotal))")
+                        .font(.caption2.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(accentColor)
+                }
+
+                BudgetProgressBar(progress: bucketProgress, tint: accentColor)
+                    .frame(height: 6)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(secondaryControlBackground)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(accentColor.opacity(0.5), lineWidth: 1.25)
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var cardDivider: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.12))
+            .frame(width: 1)
+            .padding(.vertical, 2)
+    }
+
+    private func dailyBudgetTotal(for task: TaskItem) -> TimeInterval {
+        task.activityType.totalDailyBudgetDuration
+    }
+
+    private func currentBucketTotal(for task: TaskItem) -> TimeInterval {
+        switch task.activityType {
+        case .pain:
+            return (task.priority ?? .medium).dailyBudgetDuration
+        case .pleasure, .none:
+            return task.activityType.totalDailyBudgetDuration
+        }
     }
 
     private var taskChips: some View {
@@ -959,6 +1082,56 @@ private struct BackupShareSheet: UIViewControllerRepresentable {
 }
 #endif
 
+private struct BudgetProgressBar: View {
+    var progress: Double
+    var tint: Color
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.primary.opacity(0.08))
+
+                Capsule()
+                    .fill(tint)
+                    .frame(width: proxy.size.width * CGFloat(progress))
+            }
+        }
+    }
+}
+
+private struct ActivityNameLabel: View {
+    let name: String
+    let color: Color
+    let onLongPress: () -> Void
+
+    @State private var isLongPressing = false
+
+    var body: some View {
+        Text(name)
+            .font(.system(size: 15, weight: .bold))
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
+            .opacity(isLongPressing ? 0.6 : 1)
+            .animation(.easeInOut(duration: 0.12), value: isLongPressing)
+            .contentShape(Rectangle())
+            .onLongPressGesture(
+                minimumDuration: 0.4,
+                maximumDistance: 16,
+                pressing: { pressing in
+                    isLongPressing = pressing
+                },
+                perform: {
+                    withAnimation(.easeInOut(duration: 0.08)) {
+                        isLongPressing = false
+                    }
+                    onLongPress()
+                }
+            )
+    }
+}
+
 private struct TaskChipView: View {
     let task: TaskChipItem
     let isActive: Bool
@@ -1087,7 +1260,7 @@ private struct TaskPickerView: View {
 }
 
 private struct TaskPickerSection: Identifiable {
-    static let groupOrder: [ActivityType] = [.pain, .neutral, .pleasure, .none]
+    static let groupOrder: [ActivityType] = [.pain, .pleasure, .none]
 
     var activityType: ActivityType
     var tasks: [TaskItem]

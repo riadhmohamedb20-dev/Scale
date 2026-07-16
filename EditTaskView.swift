@@ -5,6 +5,7 @@ struct EditTaskView: View {
     @Binding var taskColor: Color
     @Binding var taskDescription: String
     @Binding var taskType: ActivityType
+    @Binding var taskPriority: ActivityPriority?
 
     var onDone: () -> Void
     var onDelete: () -> Void
@@ -20,11 +21,24 @@ struct EditTaskView: View {
                 }
 
                 Section {
-                    ActivityTypeSelector(selection: $taskType)
+                    ActivityTypeSelector(selection: Binding(
+                        get: { taskType },
+                        set: { taskType = $0 ?? .none }
+                    ))
                     .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 2, trailing: 0))
                     .listRowBackground(Color.clear)
                 } header: {
                     Text("Activity type")
+                }
+
+                if taskType == .pain || taskType == .pleasure {
+                    Section {
+                        PrioritySelector(selection: $taskPriority)
+                        .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 2, trailing: 0))
+                        .listRowBackground(Color.clear)
+                    } header: {
+                        Text(taskType == .pleasure ? "Pleasure Level" : "Priority")
+                    }
                 }
 
                 Section("Description") {

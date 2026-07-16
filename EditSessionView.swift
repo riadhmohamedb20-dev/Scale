@@ -138,10 +138,8 @@ struct EditSessionView: View {
             return activity.activityType == .pain
         case .pleasure:
             return activity.activityType == .pleasure
-        case .neutral:
-            return activity.activityType == .pain || activity.activityType == .pleasure
         case .none:
-            return activity.activityType != .none
+            return activity.activityType == .pain || activity.activityType == .pleasure
         }
     }
 

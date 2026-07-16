@@ -59,19 +59,22 @@ struct TaskItem: Identifiable, Equatable, Codable {
     var color: StoredColor
     var description: String
     var activityType: ActivityType
+    var priority: ActivityPriority?
 
     init(
         id: UUID = UUID(),
         name: String,
         color: StoredColor,
         description: String = "",
-        activityType: ActivityType = .pain
+        activityType: ActivityType = .pain,
+        priority: ActivityPriority? = nil
     ) {
         self.id = id
         self.name = name
         self.color = color
         self.description = description
         self.activityType = activityType
+        self.priority = activityType.usesDailyTarget ? (priority ?? .medium) : nil
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -80,6 +83,7 @@ struct TaskItem: Identifiable, Equatable, Codable {
         case color
         case description
         case activityType
+        case priority
     }
 
     init(from decoder: Decoder) throws {
@@ -90,6 +94,8 @@ struct TaskItem: Identifiable, Equatable, Codable {
         color = try container.decode(StoredColor.self, forKey: .color)
         description = try container.decodeIfPresent(String.self, forKey: .description) ?? ""
         activityType = try container.decodeIfPresent(ActivityType.self, forKey: .activityType) ?? .pain
+        let decodedPriority = try container.decodeIfPresent(ActivityPriority.self, forKey: .priority)
+        priority = activityType.usesDailyTarget ? (decodedPriority ?? .medium) : nil
     }
 }
 
@@ -97,9 +103,8 @@ enum ActivityType: String, CaseIterable, Identifiable, Codable {
     case none
     case pain
     case pleasure
-    case neutral
 
-    static let allCases: [ActivityType] = [.pain, .neutral, .pleasure]
+    static let allCases: [ActivityType] = [.pain, .pleasure, .none]
 
     var id: String {
         rawValue
@@ -108,13 +113,11 @@ enum ActivityType: String, CaseIterable, Identifiable, Codable {
     var title: String {
         switch self {
         case .none:
-            return ""
+            return "None"
         case .pain:
             return "Pain"
         case .pleasure:
             return "Pleasure"
-        case .neutral:
-            return "Neutral"
         }
     }
 
@@ -122,22 +125,11 @@ enum ActivityType: String, CaseIterable, Identifiable, Codable {
         self == .pain || self == .pleasure
     }
 
-    var dailyTargetDuration: TimeInterval {
-        switch self {
-        case .none, .neutral:
-            return 0
-        case .pain, .pleasure:
-            return 14_400
-        }
-    }
-
-    var reserveDuration: TimeInterval {
-        switch self {
-        case .pain, .pleasure:
-            return 7_200
-        case .none, .neutral:
-            return 0
-        }
+    /// Aggregate of all three priority budgets combined, for display-only rollups (statistics, heatmap).
+    /// Actual budget enforcement happens per-priority via `ActivityPriority.dailyBudgetDuration`.
+    var totalDailyBudgetDuration: TimeInterval {
+        guard usesDailyTarget else { return 0 }
+        return ActivityPriority.allCases.reduce(0) { $0 + $1.dailyBudgetDuration }
     }
 
     init(from decoder: Decoder) throws {
@@ -145,17 +137,43 @@ enum ActivityType: String, CaseIterable, Identifiable, Codable {
         let rawValue = try container.decode(String.self)
 
         switch rawValue {
-        case Self.none.rawValue:
+        case Self.none.rawValue, "neutral", "rest":
             self = .none
         case Self.pain.rawValue:
             self = .pain
         case Self.pleasure.rawValue:
             self = .pleasure
-        case Self.neutral.rawValue, "rest":
-            self = .neutral
         default:
             self = .pain
         }
+    }
+}
+
+enum ActivityPriority: String, CaseIterable, Identifiable, Codable {
+    case high
+    case medium
+    case low
+
+    var id: String {
+        rawValue
+    }
+
+    var title: String {
+        switch self {
+        case .high:
+            return "High"
+        case .medium:
+            return "Medium"
+        case .low:
+            return "Low"
+        }
+    }
+
+    /// Each priority owns its own independent 2-hour daily timer, shared by every
+    /// activity of that (type, priority) combination — the timer belongs to the
+    /// priority, not to any individual activity or session.
+    var dailyBudgetDuration: TimeInterval {
+        7_200
     }
 }
 
@@ -218,6 +236,7 @@ struct SessionItem: Identifiable, Equatable, Codable {
     var activityType: ActivityType
     var sessionDescription: String
     var subActivityIDs: [UUID]
+    var priority: ActivityPriority?
 
     init(
         id: UUID = UUID(),
@@ -227,7 +246,8 @@ struct SessionItem: Identifiable, Equatable, Codable {
         duration: TimeInterval,
         activityType: ActivityType = .pain,
         sessionDescription: String = "",
-        subActivityIDs: [UUID] = []
+        subActivityIDs: [UUID] = [],
+        priority: ActivityPriority? = nil
     ) {
         self.id = id
         self.taskName = taskName
@@ -237,6 +257,7 @@ struct SessionItem: Identifiable, Equatable, Codable {
         self.activityType = activityType
         self.sessionDescription = sessionDescription
         self.subActivityIDs = subActivityIDs
+        self.priority = activityType.usesDailyTarget ? (priority ?? .medium) : nil
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -248,6 +269,7 @@ struct SessionItem: Identifiable, Equatable, Codable {
         case activityType
         case sessionDescription
         case subActivityIDs
+        case priority
     }
 
     init(from decoder: Decoder) throws {
@@ -261,6 +283,8 @@ struct SessionItem: Identifiable, Equatable, Codable {
         activityType = try container.decodeIfPresent(ActivityType.self, forKey: .activityType) ?? .pain
         sessionDescription = try container.decodeIfPresent(String.self, forKey: .sessionDescription) ?? ""
         subActivityIDs = try container.decodeIfPresent([UUID].self, forKey: .subActivityIDs) ?? []
+        let decodedPriority = try container.decodeIfPresent(ActivityPriority.self, forKey: .priority)
+        priority = activityType.usesDailyTarget ? (decodedPriority ?? .medium) : nil
     }
 
     var endTime: Date {
@@ -506,5 +530,21 @@ enum TimeCircleFormat {
         } else {
             return "\(m)m"
         }
+    }
+
+    static func budgetRemaining(_ seconds: TimeInterval) -> String {
+        let clampedSeconds = max(Int(seconds), 0)
+        let h = clampedSeconds / 3600
+        let m = (clampedSeconds % 3600) / 60
+
+        if h > 0 {
+            return String(format: "%dh %02dm", h, m)
+        } else {
+            return String(format: "%dm", m)
+        }
+    }
+
+    static func budgetTotal(_ seconds: TimeInterval) -> String {
+        "\(Int(seconds / 3600))h"
     }
 }

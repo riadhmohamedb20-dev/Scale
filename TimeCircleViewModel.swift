@@ -17,10 +17,12 @@ final class TimeCircleViewModel: ObservableObject {
     @Published var newTaskName = ""
     @Published var newTaskColor: Color = StoredColor.blue.color
     @Published var newTaskDescription = ""
-    @Published var newTaskType: ActivityType = .none
+    @Published var newTaskType: ActivityType?
+    @Published var newTaskPriority: ActivityPriority?
     @Published var editingSessionTaskName = ""
     @Published var editingSessionTaskColor: Color = StoredColor.blue.color
     @Published var editingSessionActivityType: ActivityType = .pain
+    @Published var editingSessionPriority: ActivityPriority?
     @Published var editingSessionStartTime = Date()
     @Published var editingSessionEndTime = Date()
     @Published var editingSessionDescription = ""
@@ -76,6 +78,10 @@ final class TimeCircleViewModel: ObservableObject {
 
     var editingTaskType: ActivityType {
         editingTask?.activityType ?? .pain
+    }
+
+    var editingTaskPriority: ActivityPriority? {
+        editingTask?.priority
     }
 
     var isEditingTask: Bool {
@@ -274,15 +280,23 @@ final class TimeCircleViewModel: ObservableObject {
     var timelineCountdownDisplay: TimeInterval {
         guard isViewingToday, state != .stopped, let selectedTask else { return 0 }
 
-        if selectedTask.activityType == .neutral {
-            return trackedTime(for: .neutral, in: elapsedTodayInterval) + elapsed
-        }
-
         guard selectedTask.activityType.usesDailyTarget else {
             return elapsed
         }
 
-        return targetBalanceToday(for: selectedTask.activityType, runningElapsed: elapsed)
+        return targetBalanceToday(for: selectedTask.activityType, priority: selectedTask.priority ?? .medium, runningElapsed: elapsed)
+    }
+
+    /// Display-only: remaining time from the combined daily budget (all priorities together),
+    /// for the activity information panel. Unlike `timelineCountdownDisplay` (which the TimeCircle
+    /// center uses and which reflects the active priority's own 2h timer for Pain), this always
+    /// reflects the full 6h daily total. Start/resume/auto-stop enforcement is untouched — it still
+    /// uses the per-priority Pain timer or the shared Pleasure timer via `remainingFuelToday`/`targetBalanceToday`.
+    var dailyBudgetRemainingToday: TimeInterval {
+        guard isViewingToday, state != .stopped, let selectedTask, selectedTask.activityType.usesDailyTarget else { return 0 }
+
+        let trackedToday = trackedTime(for: selectedTask.activityType, in: elapsedTodayInterval)
+        return max(selectedTask.activityType.totalDailyBudgetDuration - (trackedToday + elapsed), 0)
     }
 
     var historySummaries: [DayHistorySummary] {
@@ -364,7 +378,7 @@ final class TimeCircleViewModel: ObservableObject {
                 activityType: activityType,
                 duration: durationsByActivityType[activityType] ?? 0,
                 totalDuration: totalDuration,
-                targetDuration: activityType.dailyTargetDuration
+                targetDuration: activityType.totalDailyBudgetDuration
             )
         }
     }
@@ -440,7 +454,7 @@ final class TimeCircleViewModel: ObservableObject {
     func startTaskFromChip(_ task: TaskItem) -> Bool {
         guard state == .stopped, isViewingToday else { return false }
         guard hasFuelAvailableToStart(task) else {
-            showNoFuelAlert(for: task.activityType)
+            showNoFuelAlert(for: task.activityType, priority: task.priority)
             return false
         }
 
@@ -552,6 +566,7 @@ final class TimeCircleViewModel: ObservableObject {
         editingSessionTaskName = originalSession.taskName
         editingSessionTaskColor = originalSession.color.color
         editingSessionActivityType = originalSession.activityType
+        editingSessionPriority = originalSession.priority
         editingSessionStartTime = originalSession.startTime
         editingSessionEndTime = originalSession.endTime
         editingSessionDescription = originalSession.sessionDescription
@@ -600,6 +615,7 @@ final class TimeCircleViewModel: ObservableObject {
         sessions[editingSessionIndex].taskName = trimmedName
         sessions[editingSessionIndex].color = StoredColor(from: editingSessionTaskColor)
         sessions[editingSessionIndex].activityType = editingSessionActivityType
+        sessions[editingSessionIndex].priority = editingSessionPriority
         sessions[editingSessionIndex].startTime = editingSessionStartTime
         sessions[editingSessionIndex].duration = editingSessionEndTime.timeIntervalSince(editingSessionStartTime)
         sessions[editingSessionIndex].sessionDescription = editingSessionDescription.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -621,7 +637,8 @@ final class TimeCircleViewModel: ObservableObject {
                 duration: editingSessionEndTime.timeIntervalSince(editingSessionStartTime),
                 activityType: editingSessionActivityType,
                 sessionDescription: editingSessionDescription.trimmingCharacters(in: .whitespacesAndNewlines),
-                subActivityIDs: validSubActivityIDs(for: editingSessionActivityType)
+                subActivityIDs: validSubActivityIDs(for: editingSessionActivityType),
+                priority: editingSessionPriority
             )
         )
 
@@ -639,7 +656,8 @@ final class TimeCircleViewModel: ObservableObject {
         newTaskName = ""
         newTaskColor = randomTaskColor().color
         newTaskDescription = ""
-        newTaskType = .none
+        newTaskType = nil
+        newTaskPriority = nil
         isAddingTask = true
     }
 
@@ -676,6 +694,7 @@ final class TimeCircleViewModel: ObservableObject {
         editingSessionTaskName = task.name
         editingSessionTaskColor = task.color.color
         editingSessionActivityType = task.activityType
+        editingSessionPriority = task.priority
         editingSessionStartTime = dayStart
         editingSessionEndTime = defaultEnd
         editingSessionDescription = ""
@@ -699,7 +718,7 @@ final class TimeCircleViewModel: ObservableObject {
         guard state == .stopped, isViewingToday else { return false }
         guard hasFuelAvailableToStart(task) else {
             closeTaskPicker()
-            showNoFuelAlert(for: task.activityType)
+            showNoFuelAlert(for: task.activityType, priority: task.priority)
             return false
         }
 
@@ -794,6 +813,21 @@ final class TimeCircleViewModel: ObservableObject {
         guard let editingIndex else { return }
 
         tasks[editingIndex].activityType = activityType
+        if activityType.usesDailyTarget {
+            if tasks[editingIndex].priority == nil {
+                tasks[editingIndex].priority = .medium
+            }
+        } else {
+            tasks[editingIndex].priority = nil
+        }
+        saveData()
+        syncLiveActivityIfNeeded()
+    }
+
+    func updateEditingTaskPriority(_ priority: ActivityPriority?) {
+        guard let editingIndex else { return }
+
+        tasks[editingIndex].priority = priority
         saveData()
         syncLiveActivityIfNeeded()
     }
@@ -802,7 +836,7 @@ final class TimeCircleViewModel: ObservableObject {
     func start() -> Bool {
         guard let selectedTaskID, let selectedTask else { return false }
         guard hasFuelAvailableToStart(selectedTask) else {
-            showNoFuelAlert(for: selectedTask.activityType)
+            showNoFuelAlert(for: selectedTask.activityType, priority: selectedTask.priority)
             return false
         }
 
@@ -873,7 +907,7 @@ final class TimeCircleViewModel: ObservableObject {
 
         let intervals = activeIntervalsForSaving(endingAt: Date())
         let allowedDuration = selectedTask.activityType.usesDailyTarget
-            ? remainingFuelToday(for: selectedTask.activityType)
+            ? remainingFuelToday(for: selectedTask.activityType, priority: selectedTask.priority ?? .medium)
             : intervals.reduce(0) { $0 + $1.end.timeIntervalSince($1.start) }
         let clippedIntervals = clippedActiveIntervals(intervals, maxDuration: allowedDuration)
         let savedSessions = sessionItems(
@@ -888,7 +922,8 @@ final class TimeCircleViewModel: ObservableObject {
                     color: selectedTask.color,
                     startTime: startTime,
                     duration: max(elapsed, 1),
-                    activityType: selectedTask.activityType
+                    activityType: selectedTask.activityType,
+                    priority: selectedTask.priority
                 )
             )
         } else {
@@ -912,7 +947,8 @@ final class TimeCircleViewModel: ObservableObject {
             name: trimmed,
             color: StoredColor(from: newTaskColor),
             description: trimmedDescription,
-            activityType: newTaskType
+            activityType: newTaskType ?? .none,
+            priority: newTaskPriority
         )
 
         tasks.insert(task, at: 0)
@@ -923,7 +959,8 @@ final class TimeCircleViewModel: ObservableObject {
         newTaskName = ""
         newTaskColor = randomTaskColor().color
         newTaskDescription = ""
-        newTaskType = .none
+        newTaskType = nil
+        newTaskPriority = nil
         resetCurrentTracking()
         saveData()
         closeAddTaskSheet()
@@ -1039,41 +1076,52 @@ final class TimeCircleViewModel: ObservableObject {
             .reduce(0) { $0 + $1.duration }
     }
 
-    private func totalFuelDuration(for activityType: ActivityType) -> TimeInterval {
-        activityType.dailyTargetDuration + activityType.reserveDuration
+    /// Sessions never own timers — the priority owns the timer, shared across every activity
+    /// of that (type, priority) combination regardless of which activity/session recorded it.
+    private func trackedTime(for activityType: ActivityType, priority: ActivityPriority, in interval: DateInterval?) -> TimeInterval {
+        guard let interval else { return 0 }
+
+        return clippedSessions(overlapping: interval)
+            .filter { currentActivityType(for: $0) == activityType && currentPriority(for: $0) == priority }
+            .reduce(0) { $0 + $1.duration }
     }
 
-    private func remainingFuelToday(for activityType: ActivityType) -> TimeInterval {
-        guard activityType.usesDailyTarget else { return .infinity }
+    /// Pain: each priority owns its own independent timer. Pleasure: all levels share one
+    /// combined daily timer — priority is metadata only and does not affect the budget.
+    private func remainingFuelToday(for activityType: ActivityType, priority: ActivityPriority) -> TimeInterval {
+        guard activityType == .pain else {
+            let trackedDuration = trackedTime(for: activityType, in: elapsedTodayInterval)
+            return max(activityType.totalDailyBudgetDuration - trackedDuration, 0)
+        }
 
-        let trackedDuration = trackedTime(for: activityType, in: elapsedTodayInterval)
-        return max(totalFuelDuration(for: activityType) - trackedDuration, 0)
+        let trackedDuration = trackedTime(for: activityType, priority: priority, in: elapsedTodayInterval)
+        return max(priority.dailyBudgetDuration - trackedDuration, 0)
     }
 
     private func hasFuelAvailableToStart(_ task: TaskItem) -> Bool {
         guard task.activityType.usesDailyTarget else { return true }
 
-        return remainingFuelToday(for: task.activityType) > 0
+        return remainingFuelToday(for: task.activityType, priority: task.priority ?? .medium) > 0
     }
 
     private func hasFuelAvailableToResume(_ task: TaskItem) -> Bool {
         guard task.activityType.usesDailyTarget else { return true }
 
-        return elapsed < remainingFuelToday(for: task.activityType)
+        return elapsed < remainingFuelToday(for: task.activityType, priority: task.priority ?? .medium)
     }
 
     private func enforceFuelLimitIfNeeded() {
         guard state == .running,
               let selectedTask,
               selectedTask.activityType.usesDailyTarget,
-              elapsed >= remainingFuelToday(for: selectedTask.activityType)
+              elapsed >= remainingFuelToday(for: selectedTask.activityType, priority: selectedTask.priority ?? .medium)
         else { return }
 
         finishCurrentSessionAtFuelLimit(for: selectedTask)
     }
 
     private func finishCurrentSessionAtFuelLimit(for task: TaskItem) {
-        let allowedDuration = remainingFuelToday(for: task.activityType)
+        let allowedDuration = remainingFuelToday(for: task.activityType, priority: task.priority ?? .medium)
         let clippedIntervals = clippedActiveIntervals(
             activeIntervalsForSaving(endingAt: now),
             maxDuration: allowedDuration
@@ -1090,13 +1138,14 @@ final class TimeCircleViewModel: ObservableObject {
         selectedReviewTaskName = nil
         highlightedReviewSessionIDs = []
         selectedSessionID = nil
-        showNoFuelAlert(for: task.activityType)
+        showNoFuelAlert(for: task.activityType, priority: task.priority)
     }
 
-    private func showNoFuelAlert(for activityType: ActivityType) {
+    private func showNoFuelAlert(for activityType: ActivityType, priority: ActivityPriority?) {
         guard activityType.usesDailyTarget else { return }
 
-        noFuelAlertMessage = "You’ve used all your \(activityType.title) time for today."
+        let priorityLabel = (activityType == .pain) ? priority.map { " (\($0.title))" } ?? "" : ""
+        noFuelAlertMessage = "You’ve used all your \(activityType.title)\(priorityLabel) time for today."
         isShowingNoFuelAlert = true
     }
 
@@ -1150,24 +1199,20 @@ final class TimeCircleViewModel: ObservableObject {
                 color: task.color,
                 startTime: interval.start,
                 duration: max(duration, 1),
-                activityType: task.activityType
+                activityType: task.activityType,
+                priority: task.priority
             )
         }
     }
 
-    private func targetBalanceToday(for activityType: ActivityType, runningElapsed: TimeInterval) -> TimeInterval {
-        let totalTrackedTime = trackedTime(for: activityType, in: elapsedTodayInterval) + runningElapsed
-
-        if totalTrackedTime < activityType.dailyTargetDuration {
-            return activityType.dailyTargetDuration - totalTrackedTime
+    private func targetBalanceToday(for activityType: ActivityType, priority: ActivityPriority, runningElapsed: TimeInterval) -> TimeInterval {
+        guard activityType == .pain else {
+            let totalTrackedTime = trackedTime(for: activityType, in: elapsedTodayInterval) + runningElapsed
+            return max(activityType.totalDailyBudgetDuration - totalTrackedTime, 0)
         }
 
-        let reserveElapsed = totalTrackedTime - activityType.dailyTargetDuration
-        if reserveElapsed < activityType.reserveDuration {
-            return activityType.reserveDuration - reserveElapsed
-        }
-
-        return 0
+        let totalTrackedTime = trackedTime(for: activityType, priority: priority, in: elapsedTodayInterval) + runningElapsed
+        return max(priority.dailyBudgetDuration - totalTrackedTime, 0)
     }
 
     private var elapsedTodayInterval: DateInterval? {
@@ -1193,12 +1238,17 @@ final class TimeCircleViewModel: ObservableObject {
             duration: clippedEnd.timeIntervalSince(clippedStart),
             activityType: session.activityType,
             sessionDescription: session.sessionDescription,
-            subActivityIDs: session.subActivityIDs
+            subActivityIDs: session.subActivityIDs,
+            priority: session.priority
         )
     }
 
     private func currentActivityType(for session: SessionItem) -> ActivityType {
         tasks.first { $0.name == session.taskName }?.activityType ?? session.activityType
+    }
+
+    private func currentPriority(for session: SessionItem) -> ActivityPriority? {
+        tasks.first { $0.name == session.taskName }?.priority ?? session.priority
     }
 
     private func sessionWithCurrentActivityType(_ session: SessionItem) -> SessionItem {
@@ -1210,7 +1260,8 @@ final class TimeCircleViewModel: ObservableObject {
             duration: session.duration,
             activityType: currentActivityType(for: session),
             sessionDescription: session.sessionDescription,
-            subActivityIDs: session.subActivityIDs
+            subActivityIDs: session.subActivityIDs,
+            priority: currentPriority(for: session)
         )
     }
 
@@ -1300,10 +1351,8 @@ final class TimeCircleViewModel: ObservableObject {
             return task.activityType == .pain
         case .pleasure:
             return task.activityType == .pleasure
-        case .neutral:
-            return task.activityType == .pain || task.activityType == .pleasure
         case .none:
-            return task.activityType != .none
+            return task.activityType == .pain || task.activityType == .pleasure
         }
     }
 
@@ -1394,6 +1443,14 @@ final class TimeCircleViewModel: ObservableObject {
             return
         }
 
+        // Pain's countdown is scoped to the active priority's own budget — the exact same
+        // targetBalanceToday call the in-app circular timer uses, evaluated right now so the
+        // Live Activity gets a correct "remaining as of this instant" snapshot to tick live from.
+        // Pleasure keeps showing elapsed time, unchanged.
+        let painCountdownRemaining: TimeInterval? = selectedTask.activityType == .pain
+            ? targetBalanceToday(for: selectedTask.activityType, priority: selectedTask.priority ?? .medium, runningElapsed: elapsed)
+            : nil
+
         #if canImport(ActivityKit)
         if #available(iOS 16.2, *) {
             LiveActivityManager.shared.startOrUpdate(
@@ -1401,7 +1458,8 @@ final class TimeCircleViewModel: ObservableObject {
                 startTime: startTime,
                 runningStartTime: runningStartTime,
                 elapsedBeforePause: elapsedBeforePause,
-                isPaused: state == .paused
+                isPaused: state == .paused,
+                painCountdownRemaining: painCountdownRemaining
             )
         }
         #endif
