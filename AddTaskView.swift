@@ -22,7 +22,7 @@ struct AddTaskView: View {
                     .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 2, trailing: 0))
                     .listRowBackground(Color.clear)
                 } header: {
-                    Text("Activity type")
+                    Text("Type")
                 }
 
                 if taskType == .pain || taskType == .pleasure {

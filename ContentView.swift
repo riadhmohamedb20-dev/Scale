@@ -7,11 +7,17 @@ import UIKit
 import AppKit
 #endif
 
+private enum MainTab {
+    case today
+    case statistics
+}
+
 struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("appAppearanceMode") private var appearanceModeRaw = AppAppearanceMode.system.rawValue
     @StateObject private var viewModel = TimeCircleViewModel()
+    @State private var selectedMainTab: MainTab = .today
     @State private var selectedTimelinePage = 0
     @State private var isShowingSaveConfirmation = false
     @State private var isDatePillPressed = false
@@ -29,10 +35,11 @@ struct ContentView: View {
 
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     private let activityChipLeadingSpacerID = "activityChipLeadingSpacer"
-    private let activityHeadingBottomPadding: CGFloat = -4
-    private let activityChipRowTopPadding: CGFloat = 18
+    private let activityHeadingToChipSpacing: CGFloat = 7.2
+    private let activityChipRowTopPadding: CGFloat = 8
     private let previousDayActivityChipRowTopPadding: CGFloat = 8
     private let trackingTopBarTopPadding: CGFloat = 0
+    private let idleControlsTopPadding: CGFloat = 23
     private let trackingTopBarHeight: CGFloat = 36
     private let trackingTopBarHorizontalPadding: CGFloat = 16
     private let returnToTodayButtonTrailingOffset: CGFloat = 46
@@ -53,20 +60,8 @@ struct ContentView: View {
         colorScheme == .light ? .black : Color.white.opacity(0.14)
     }
 
-    private var activePageDotColor: Color {
-        colorScheme == .light ? .black : .white
-    }
-
-    private var inactivePageDotColor: Color {
-        colorScheme == .light ? Color.gray.opacity(0.5) : Color.gray.opacity(0.68)
-    }
-
-    private var pageIndicatorBackground: Color {
-        colorScheme == .light ? Color.black.opacity(0.06) : Color.white.opacity(0.08)
-    }
-
     var body: some View {
-        trackingView
+        rootContent
         .onAppear {
             viewModel.loadData()
         }
@@ -276,9 +271,62 @@ struct ContentView: View {
         }
     }
 
+    private var rootContent: some View {
+        VStack(spacing: 0) {
+            Group {
+                if selectedMainTab == .today {
+                    trackingView
+                } else {
+                    StatisticsView(viewModel: viewModel)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if shouldShowMainTabBar {
+                mainTabBar
+            }
+        }
+    }
+
+    private var shouldShowMainTabBar: Bool {
+        selectedMainTab == .statistics || (viewModel.isViewingToday && !isShowingActiveCard)
+    }
+
+    private var mainTabBar: some View {
+        HStack(spacing: 0) {
+            mainTabBarButton(title: "Today", tab: .today)
+            mainTabBarButton(title: "Statistics", tab: .statistics)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 60.7)
+        .padding(.top, 44.8)
+        .padding(.bottom, 8)
+    }
+
+    private func mainTabBarButton(title: String, tab: MainTab) -> some View {
+        let isActive = selectedMainTab == tab
+
+        return Button {
+            selectedMainTab = tab
+        } label: {
+            VStack(spacing: 8.7) {
+                Text(title)
+                    .font(.system(size: isActive ? 19 : 17, weight: isActive ? .bold : .regular))
+                    .foregroundStyle(isActive ? Color.primary : Color.secondary)
+
+                Rectangle()
+                    .fill(isActive ? Color.primary : Color.clear)
+                    .frame(width: 146.7, height: 4.2)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
     private var trackingView: some View {
         GeometryReader { proxy in
             let topBarTopPadding = trackingTopBarTopPadding + proxy.safeAreaInsets.top
+            let circleSize = min(390, max(280, proxy.size.width - 8))
 
             ZStack {
             Color(platformSystemBackground)
@@ -290,20 +338,27 @@ struct ContentView: View {
             VStack(spacing: 14) {
                 topBarPlaceholder(topPadding: topBarTopPadding)
 
-                timelinePager
+                timelinePager(pageWidth: proxy.size.width, circleSize: circleSize)
 
                 activityChipSection
                     .padding(.top, 8)
 
-                Spacer(minLength: 16)
-
-                if viewModel.isViewingToday {
+                if isShowingActiveCard {
                     controls
-                } else {
-                    pastDayControls
-                }
+                        .padding(.top, 16)
 
-                Spacer(minLength: 16)
+                    Spacer(minLength: 16)
+                } else {
+                    if viewModel.isViewingToday {
+                        controls
+                            .padding(.top, idleControlsTopPadding)
+                    } else {
+                        pastDayControls
+                            .padding(.top, idleControlsTopPadding)
+                    }
+
+                    Spacer(minLength: 16)
+                }
             }
             .background {
                 if !viewModel.isViewingToday {
@@ -445,49 +500,29 @@ struct ContentView: View {
         .buttonStyle(.plain)
     }
 
-    private var timelinePager: some View {
-        GeometryReader { proxy in
-            let pageWidth = proxy.size.width
-            let circleSize = min(370, max(280, pageWidth - 32))
-
-            VStack(spacing: 8) {
-                if viewModel.isViewingToday {
-                    TabView(selection: $selectedTimelinePage) {
-                        timelinePage(scope: .day, circleSize: circleSize)
-                            .frame(width: pageWidth, height: 370)
-                            .tag(0)
-
-                        timelinePage(scope: .hour, circleSize: circleSize)
-                            .frame(width: pageWidth, height: 370)
-                            .tag(1)
-                    }
-                    .timelinePagerStyle()
-                    .frame(width: pageWidth, height: 370)
-                    .clipped()
-
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(selectedTimelinePage == 0 ? activePageDotColor : inactivePageDotColor)
-                            .frame(width: 7, height: 7)
-
-                        Circle()
-                            .fill(selectedTimelinePage == 1 ? activePageDotColor : inactivePageDotColor)
-                            .frame(width: 7, height: 7)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(pageIndicatorBackground)
-                    .clipShape(Capsule())
-                } else {
+    private func timelinePager(pageWidth: CGFloat, circleSize: CGFloat) -> some View {
+        VStack(spacing: 8) {
+            if viewModel.isViewingToday {
+                TabView(selection: $selectedTimelinePage) {
                     timelinePage(scope: .day, circleSize: circleSize)
-                        .frame(width: pageWidth, height: 370)
+                        .frame(width: pageWidth, height: circleSize)
+                        .tag(0)
+
+                    timelinePage(scope: .hour, circleSize: circleSize)
+                        .frame(width: pageWidth, height: circleSize)
+                        .tag(1)
                 }
+                .timelinePagerStyle()
+                .frame(width: pageWidth, height: circleSize)
+                .clipped()
+            } else {
+                timelinePage(scope: .day, circleSize: circleSize)
+                    .frame(width: pageWidth, height: circleSize)
             }
-            .frame(width: pageWidth, height: 390)
-            .padding(.top, 4)
         }
+        .frame(width: pageWidth, height: circleSize)
+        .padding(.top, 4)
         .frame(maxWidth: .infinity)
-        .frame(height: 390)
     }
 
     private func timelinePage(scope: TimelineScope, circleSize: CGFloat) -> some View {
@@ -517,16 +552,16 @@ struct ContentView: View {
     private var controls: some View {
         Group {
             if viewModel.state == .stopped {
-                HStack(spacing: 24) {
+                HStack(spacing: 20) {
                     startTrackingButton
 
                     Button {
                         isShowingAddOptions = true
                     } label: {
                         Image(systemName: "plus")
-                            .font(.system(size: 28, weight: .bold))
+                            .font(.system(size: 30, weight: .bold))
                             .foregroundStyle(secondaryControlIconColor)
-                            .frame(width: 64, height: 64)
+                            .frame(width: 72, height: 72)
                             .background(secondaryControlBackground)
                             .clipShape(Circle())
                     }
@@ -534,7 +569,7 @@ struct ContentView: View {
                     moreButton
                 }
             } else {
-                HStack(spacing: 34) {
+                HStack(spacing: 30) {
                     Button {
                         let wasRunning = viewModel.state == .running
                         guard viewModel.togglePauseResume() else { return }
@@ -545,9 +580,9 @@ struct ContentView: View {
                         }
                     } label: {
                         Image(systemName: viewModel.state == .running ? "pause.fill" : "play.fill")
-                            .font(.system(size: 34, weight: .bold))
+                            .font(.system(size: 38, weight: .bold))
                             .foregroundStyle(.white)
-                            .frame(width: 86, height: 86)
+                            .frame(width: 96, height: 96)
                             .background(.orange)
                             .clipShape(Circle())
                     }
@@ -557,9 +592,9 @@ struct ContentView: View {
                         switchToDayPage()
                     } label: {
                         Image(systemName: "stop.fill")
-                            .font(.system(size: 34, weight: .bold))
+                            .font(.system(size: 38, weight: .bold))
                             .foregroundStyle(.white)
-                            .frame(width: 86, height: 86)
+                            .frame(width: 96, height: 96)
                             .background(darkCircularControlBackground)
                             .clipShape(Circle())
                     }
@@ -581,9 +616,9 @@ struct ContentView: View {
             }
         } label: {
             Image(systemName: "play.fill")
-                .font(.system(size: 42, weight: .bold))
+                .font(.system(size: 46, weight: .bold))
                 .foregroundStyle(.white)
-                .frame(width: 96, height: 96)
+                .frame(width: 108, height: 108)
                 .background(viewModel.selectedTask?.color.color ?? .gray)
                 .clipShape(Circle())
         }
@@ -594,9 +629,9 @@ struct ContentView: View {
             isShowingMoreOptions = true
         } label: {
             Image(systemName: "ellipsis")
-                .font(.system(size: 25, weight: .bold))
+                .font(.system(size: 28, weight: .bold))
                 .foregroundStyle(secondaryControlIconColor)
-                .frame(width: 64, height: 64)
+                .frame(width: 72, height: 72)
                 .background(secondaryControlBackground)
                 .clipShape(Circle())
         }
@@ -611,17 +646,24 @@ struct ContentView: View {
                     centeredActiveActivityChip(activeChip)
                 }
             } else {
-                VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: activityHeadingToChipSpacing) {
                     Text("Activities")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 16)
-                        .padding(.bottom, activityHeadingBottomPadding)
 
                     taskChips
+                        .frame(height: 46)
                 }
             }
         }
+    }
+
+    private var isShowingActiveCard: Bool {
+        viewModel.isViewingToday
+            && viewModel.state != .stopped
+            && activeActivityChip != nil
+            && viewModel.selectedTask?.activityType != .none
     }
 
     private var activeActivityChip: TaskChipItem? {
@@ -671,82 +713,63 @@ struct ContentView: View {
         let dailyTotal = dailyBudgetTotal(for: task)
         let dailyProgress = dailyTotal > 0 ? min(max(dailyRemaining / dailyTotal, 0), 1) : 0
 
-        let bucketRemaining = viewModel.timelineCountdownDisplay
-        let bucketTotal = currentBucketTotal(for: task)
-        let bucketProgress = bucketTotal > 0 ? min(max(bucketRemaining / bucketTotal, 0), 1) : 0
-        let bucketLabel = "\(task.activityType.title) (\((task.priority ?? .medium).title))"
+        return VStack(alignment: .leading, spacing: 0) {
+            ActivityNameLabel(name: chip.name, color: accentColor) {
+                guard let editingTask = viewModel.activityForEditing(from: chip) else { return }
 
-        return VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 8) {
-                ActivityNameLabel(name: chip.name, color: accentColor) {
-                    guard let editingTask = viewModel.activityForEditing(from: chip) else { return }
-
-                    viewModel.editTask(editingTask)
-                }
-                .layoutPriority(1)
-
-                cardDivider
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(task.activityType == .pleasure ? "Level" : "Priority")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-
-                    Text((task.priority ?? .medium).title)
-                        .font(.footnote.weight(.bold))
-                        .foregroundStyle(accentColor)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                cardDivider
-
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text("Left today")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-
-                    Text("\(TimeCircleFormat.budgetRemaining(dailyRemaining)) / \(TimeCircleFormat.budgetTotal(dailyTotal))")
-                        .font(.footnote.weight(.bold).monospacedDigit())
-                        .foregroundStyle(accentColor)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                }
+                viewModel.editTask(editingTask)
             }
+
+            HStack(alignment: .center, spacing: 10) {
+                cardStat(label: "Type", value: task.activityType.title, color: accentColor)
+
+                cardDivider
+
+                cardStat(
+                    label: task.activityType == .pleasure ? "Level" : "Priority",
+                    value: (task.priority ?? .medium).title,
+                    color: accentColor
+                )
+            }
+            .padding(.top, 10)
+
+            Text("\(TimeCircleFormat.budgetRemaining(dailyRemaining)) / \(TimeCircleFormat.budgetTotal(dailyTotal))")
+                .font(.system(size: 15, weight: .bold, design: .default).monospacedDigit())
+                .foregroundStyle(accentColor)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.top, 4)
 
             BudgetProgressBar(progress: dailyProgress, tint: accentColor)
-                .frame(height: 6)
-
-            if task.activityType == .pain {
-                HStack {
-                    Text(bucketLabel)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-
-                    Spacer(minLength: 8)
-
-                    Text("\(TimeCircleFormat.budgetRemaining(bucketRemaining)) left / \(TimeCircleFormat.budgetTotal(bucketTotal))")
-                        .font(.caption2.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(accentColor)
-                }
-
-                BudgetProgressBar(progress: bucketProgress, tint: accentColor)
-                    .frame(height: 6)
-            }
+                .frame(height: 8)
+                .padding(.top, 8)
         }
-        .padding(12)
+        .padding(16)
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .fill(secondaryControlBackground)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .stroke(accentColor.opacity(0.5), lineWidth: 1.25)
         )
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func cardStat(label: String, value: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.system(size: 12, weight: .regular))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Text(value)
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
     }
 
     private var cardDivider: some View {
@@ -758,15 +781,6 @@ struct ContentView: View {
 
     private func dailyBudgetTotal(for task: TaskItem) -> TimeInterval {
         task.activityType.totalDailyBudgetDuration
-    }
-
-    private func currentBucketTotal(for task: TaskItem) -> TimeInterval {
-        switch task.activityType {
-        case .pain:
-            return (task.priority ?? .medium).dailyBudgetDuration
-        case .pleasure, .none:
-            return task.activityType.totalDailyBudgetDuration
-        }
     }
 
     private var taskChips: some View {
@@ -1109,7 +1123,7 @@ private struct ActivityNameLabel: View {
 
     var body: some View {
         Text(name)
-            .font(.system(size: 15, weight: .bold))
+            .font(.system(size: 22, weight: .bold))
             .foregroundStyle(color)
             .lineLimit(1)
             .minimumScaleFactor(0.85)

@@ -14,21 +14,19 @@ final class LiveActivityManager {
 
     func startOrUpdate(
         task: TaskItem,
-        startTime: Date,
         runningStartTime: Date?,
         elapsedBeforePause: TimeInterval,
         isPaused: Bool,
-        painCountdownRemaining: TimeInterval?
+        budgetCountdownRemaining: TimeInterval?
     ) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
 
         let contentState = contentState(
             for: task,
-            startTime: startTime,
             runningStartTime: runningStartTime,
             elapsedBeforePause: elapsedBeforePause,
             isPaused: isPaused,
-            painCountdownRemaining: painCountdownRemaining
+            budgetCountdownRemaining: budgetCountdownRemaining
         )
 
         Task {
@@ -65,33 +63,36 @@ final class LiveActivityManager {
 
     private func contentState(
         for task: TaskItem,
-        startTime: Date,
         runningStartTime: Date?,
         elapsedBeforePause: TimeInterval,
         isPaused: Bool,
-        painCountdownRemaining: TimeInterval?
+        budgetCountdownRemaining: TimeInterval?
     ) -> ScaleActivityAttributes.ContentState {
         let now = Date()
-        let displayStartDate = (runningStartTime ?? startTime).addingTimeInterval(-elapsedBeforePause)
-        let pausedElapsed = max(elapsedBeforePause, 0)
+
+        // While running, elapsed = now - displayStartDate must hold, anchored to the fresh
+        // runningStartTime. While paused there's no running anchor, so anchor to "now" itself —
+        // paired with pauseDate (also "now" below), that freezes a count-up display at exactly
+        // elapsedBeforePause. Using the original session startTime here instead would corrupt
+        // the count-up freeze value for None-type activities after more than one pause/resume.
+        let displayStartDate = (runningStartTime ?? now).addingTimeInterval(-elapsedBeforePause)
 
         // Always a fresh "now + remaining" snapshot, so Text(timerInterval:) can tick live on its
-        // own from here with no further app-side updates. When paused, countdownPauseDate is set to
-        // this same "now", so the native timer text freezes at exactly painCountdownRemaining.
-        let countdownEndDate = painCountdownRemaining.map { now.addingTimeInterval($0) }
-        let countdownPauseDate = (countdownEndDate != nil && isPaused) ? now : nil
+        // own from here with no further app-side updates. When paused, pauseDate is set to this
+        // same "now", so the native timer text freezes at exactly budgetCountdownRemaining.
+        let countdownEndDate = budgetCountdownRemaining.map { now.addingTimeInterval($0) }
+        let pauseDate = isPaused ? now : nil
 
         return ScaleActivityAttributes.ContentState(
             activityTitle: task.name,
             activityTypeTitle: task.activityType.title,
             displayStartDate: displayStartDate,
-            pausedElapsed: pausedElapsed,
             isPaused: isPaused,
             colorRed: task.color.red,
             colorGreen: task.color.green,
             colorBlue: task.color.blue,
             countdownEndDate: countdownEndDate,
-            countdownPauseDate: countdownPauseDate
+            pauseDate: pauseDate
         )
     }
 }

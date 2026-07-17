@@ -1437,17 +1437,17 @@ final class TimeCircleViewModel: ObservableObject {
     private func syncLiveActivityIfNeeded() {
         guard state != .stopped,
               let selectedTask,
-              let startTime
+              startTime != nil
         else {
             endLiveActivity()
             return
         }
 
-        // Pain's countdown is scoped to the active priority's own budget — the exact same
-        // targetBalanceToday call the in-app circular timer uses, evaluated right now so the
-        // Live Activity gets a correct "remaining as of this instant" snapshot to tick live from.
-        // Pleasure keeps showing elapsed time, unchanged.
-        let painCountdownRemaining: TimeInterval? = selectedTask.activityType == .pain
+        // Pain and Pleasure both have a daily budget countdown — targetBalanceToday already
+        // branches correctly between Pain's priority-scoped 2h budget and Pleasure's shared 6h
+        // pool, so this is the exact same value the in-app circular timer shows for either type.
+        // None has no budget and counts up instead, so it gets no countdown end date.
+        let budgetCountdownRemaining: TimeInterval? = selectedTask.activityType.usesDailyTarget
             ? targetBalanceToday(for: selectedTask.activityType, priority: selectedTask.priority ?? .medium, runningElapsed: elapsed)
             : nil
 
@@ -1455,11 +1455,10 @@ final class TimeCircleViewModel: ObservableObject {
         if #available(iOS 16.2, *) {
             LiveActivityManager.shared.startOrUpdate(
                 task: selectedTask,
-                startTime: startTime,
                 runningStartTime: runningStartTime,
                 elapsedBeforePause: elapsedBeforePause,
                 isPaused: state == .paused,
-                painCountdownRemaining: painCountdownRemaining
+                budgetCountdownRemaining: budgetCountdownRemaining
             )
         }
         #endif
