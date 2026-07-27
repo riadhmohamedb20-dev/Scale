@@ -4,6 +4,7 @@ import Combine
 final class TimeCircleViewModel: ObservableObject {
     @Published var tasks: [TaskItem] = []
     @Published var sessions: [SessionItem] = []
+    @Published var toDoItems: [ToDoItem] = []
     @Published var selectedTaskID: UUID?
     @Published var selectedReviewTaskName: String?
     @Published var highlightedReviewSessionIDs: Set<UUID> = []
@@ -29,16 +30,24 @@ final class TimeCircleViewModel: ObservableObject {
     @Published var editingSessionSubActivityIDs: [UUID] = []
     @Published var selectedDay = Calendar.current.startOfDay(for: Date())
     @Published var isShowingHistoryPicker = false
+    @Published var isShowingAddToDoItem = false
+    @Published var editingToDoItemID: UUID?
+    @Published var newToDoItemTitle = ""
+    @Published var newToDoItemActivityTaskID: UUID?
+    @Published var newToDoItemActivityType: ActivityType?
+    @Published var newToDoItemPriority: ActivityPriority?
     @Published var state: TrackingState = .stopped
     @Published var now = Date()
     @Published var isShowingNoFuelAlert = false
     @Published var noFuelAlertMessage = ""
+    @Published var isShowingPainReminder = false
 
     private var startTime: Date?
     private var runningStartTime: Date?
     private var elapsedBeforePause: TimeInterval = 0
     private var completedActiveIntervals: [ActiveTrackingInterval] = []
     private var recentTaskInteractionDates: [UUID: Date] = [:]
+    private var wasPainReminderDue = false
 
     var selectedIndex: Int? {
         guard let selectedTaskID else { return nil }
@@ -52,6 +61,33 @@ final class TimeCircleViewModel: ObservableObject {
 
     var selectedSession: SessionItem? {
         sessions.first { $0.id == selectedSessionID }
+    }
+
+    private var lastPainSessionEnd: Date? {
+        sessions
+            .filter { $0.activityType == .pain }
+            .map { $0.startTime.addingTimeInterval($0.duration) }
+            .max()
+    }
+
+    /// True once 60 minutes have passed since the last Pain session ended (or since the
+    /// start of today, if none has happened yet today), unless a Pain activity is being
+    /// tracked right now. Only checked while the app is open — there's no background
+    /// notification system, so this piggybacks on the per-second `now` tick.
+    var isPainReminderDue: Bool {
+        if state != .stopped, let selectedTask, selectedTask.activityType == .pain {
+            return false
+        }
+
+        let startOfToday = Calendar.current.startOfDay(for: now)
+        let baseline: Date
+        if let lastPainSessionEnd, lastPainSessionEnd > startOfToday {
+            baseline = lastPainSessionEnd
+        } else {
+            baseline = startOfToday
+        }
+
+        return now.timeIntervalSince(baseline) >= 3600
     }
 
     var editingTask: TaskItem? {
@@ -146,6 +182,134 @@ final class TimeCircleViewModel: ObservableObject {
     var selectedDaySessions: [SessionItem] {
         clippedSessions(overlapping: selectedDayInterval)
             .sorted { $0.startTime < $1.startTime }
+    }
+
+    var toDoItemsForSelectedDay: [ToDoItem] {
+        toDoItems
+            .filter { Calendar.current.isDate($0.day, inSameDayAs: selectedDay) }
+            .sorted { $0.sortOrder < $1.sortOrder }
+    }
+
+    /// Today shows pending items normally; past days never show pending items, since
+    /// there's no such thing as "pending" in the past — only what was completed that day.
+    var pendingToDoItemsForSelectedDay: [ToDoItem] {
+        guard isViewingToday else { return [] }
+        return toDoItemsForSelectedDay.filter { !$0.isCompleted }
+    }
+
+    var completedToDoItemsForSelectedDay: [ToDoItem] {
+        toDoItemsForSelectedDay.filter(\.isCompleted)
+    }
+
+    /// Top level is always Pain / Pleasure / Neutral (in that order), plus a trailing
+    /// "Other" for fully-unlinked items. Past days only ever include what was completed
+    /// that day, so a group with nothing completed simply doesn't appear.
+    ///
+    /// Pain/Pleasure additionally nest a priority layer (High/Medium/Low) between the
+    /// type and its activities — only priority buckets that actually contain a task are
+    /// shown. A bare-type item (no specific activity) still lands in the right bucket via
+    /// its own `manualPriority`. Neutral has no priority concept, so it nests activities
+    /// directly under the type, same as before.
+    var toDoGroupsForSelectedDay: [ToDoGroup] {
+        let relevantItems = isViewingToday ? toDoItemsForSelectedDay : completedToDoItemsForSelectedDay
+
+        var itemsByActivityID: [UUID: [ToDoItem]] = [:]
+        var itemsByActivityType: [ActivityType: [ToDoItem]] = [:]
+        var otherItems: [ToDoItem] = []
+
+        for item in relevantItems {
+            if let activityTaskID = item.activityTaskID {
+                itemsByActivityID[activityTaskID, default: []].append(item)
+            } else if let activityType = item.activityType {
+                itemsByActivityType[activityType, default: []].append(item)
+            } else {
+                otherItems.append(item)
+            }
+        }
+
+        var groups: [ToDoGroup] = []
+
+        for type in ActivityType.allCases {
+            let directItems = itemsByActivityType[type] ?? []
+            let activitiesForType = tasks.filter { $0.activityType == type }
+
+            if type.usesDailyTarget {
+                let priorityGroups = ActivityPriority.allCases.compactMap { priority -> ToDoGroup? in
+                    let directForPriority = directItems.filter { ($0.manualPriority ?? .medium) == priority }
+
+                    let activitySubGroups = activitiesForType
+                        .filter { ($0.priority ?? .medium) == priority }
+                        .compactMap { task -> ToDoGroup? in
+                            guard let items = itemsByActivityID[task.id], !items.isEmpty else { return nil }
+                            return ToDoGroup(
+                                id: task.id.uuidString,
+                                type: type,
+                                priority: priority,
+                                activity: task,
+                                items: sortedByCompletion(items),
+                                subGroups: []
+                            )
+                        }
+
+                    guard !directForPriority.isEmpty || !activitySubGroups.isEmpty else { return nil }
+
+                    return ToDoGroup(
+                        id: "type-\(type.rawValue)-priority-\(priority.rawValue)",
+                        type: type,
+                        priority: priority,
+                        activity: nil,
+                        items: sortedByCompletion(directForPriority),
+                        subGroups: activitySubGroups
+                    )
+                }
+
+                guard isViewingToday || !priorityGroups.isEmpty else { continue }
+
+                groups.append(ToDoGroup(
+                    id: "type-\(type.rawValue)",
+                    type: type,
+                    priority: nil,
+                    activity: nil,
+                    items: [],
+                    subGroups: priorityGroups
+                ))
+            } else {
+                let activitySubGroups = activitiesForType.compactMap { task -> ToDoGroup? in
+                    guard let items = itemsByActivityID[task.id], !items.isEmpty else { return nil }
+                    return ToDoGroup(
+                        id: task.id.uuidString,
+                        type: type,
+                        priority: nil,
+                        activity: task,
+                        items: sortedByCompletion(items),
+                        subGroups: []
+                    )
+                }
+
+                guard isViewingToday || !directItems.isEmpty || !activitySubGroups.isEmpty else { continue }
+
+                groups.append(ToDoGroup(
+                    id: "type-\(type.rawValue)",
+                    type: type,
+                    priority: nil,
+                    activity: nil,
+                    items: sortedByCompletion(directItems),
+                    subGroups: activitySubGroups
+                ))
+            }
+        }
+
+        if !otherItems.isEmpty {
+            groups.append(ToDoGroup(id: "other", type: nil, priority: nil, activity: nil, items: sortedByCompletion(otherItems), subGroups: []))
+        }
+
+        return groups
+    }
+
+    /// Stable sort that pushes completed items below pending ones, preserving each
+    /// bucket's existing (sortOrder-based) relative order.
+    private func sortedByCompletion(_ items: [ToDoItem]) -> [ToDoItem] {
+        items.sorted { !$0.isCompleted && $1.isCompleted }
     }
 
     var orderedTasksForSelectedDay: [TaskItem] {
@@ -296,7 +460,9 @@ final class TimeCircleViewModel: ObservableObject {
         guard isViewingToday, state != .stopped, let selectedTask, selectedTask.activityType.usesDailyTarget else { return 0 }
 
         let trackedToday = trackedTime(for: selectedTask.activityType, in: elapsedTodayInterval)
-        return max(selectedTask.activityType.totalDailyBudgetDuration - (trackedToday + elapsed), 0)
+        let borrowedByPain = selectedTask.activityType == .pleasure ? totalPainOverageToday() : 0
+        let effectiveBudget = selectedTask.activityType.totalDailyBudgetDuration - borrowedByPain
+        return max(effectiveBudget - (trackedToday + elapsed), 0)
     }
 
     var historySummaries: [DayHistorySummary] {
@@ -395,6 +561,10 @@ final class TimeCircleViewModel: ObservableObject {
             sessions = decodedSessions
         }
 
+        if let decodedToDoItems = TimeCircleStorage.loadToDoItems() {
+            toDoItems = decodedToDoItems
+        }
+
         restoreActiveTrackingState()
         ensureValidSelectedTask()
     }
@@ -403,6 +573,7 @@ final class TimeCircleViewModel: ObservableObject {
         resetCurrentTracking()
         tasks = backup.tasks
         sessions = backup.sessions
+        toDoItems = backup.toDoItems
         selectedTaskID = nil
         selectedReviewTaskName = nil
         highlightedReviewSessionIDs = []
@@ -416,6 +587,7 @@ final class TimeCircleViewModel: ObservableObject {
         isShowingHistoryPicker = false
         selectedDay = Calendar.current.startOfDay(for: now)
         saveData()
+        saveToDoItems()
     }
 
     func updateCurrentTime(_ date: Date) {
@@ -426,6 +598,23 @@ final class TimeCircleViewModel: ObservableObject {
 
         ensureValidActiveTrackingState()
         enforceFuelLimitIfNeeded()
+        updatePainReminderState()
+    }
+
+    /// Surfaces the reminder the moment the due condition freshly becomes true, and
+    /// auto-dismisses it the moment it stops being due (e.g. a Pain session starts).
+    /// Dismissing it manually doesn't reappear until the condition clears and re-triggers
+    /// (track a Pain activity, then let another hour pass) rather than nagging every tick.
+    private func updatePainReminderState() {
+        let due = isPainReminderDue
+
+        if due && !wasPainReminderDue {
+            isShowingPainReminder = true
+        } else if !due {
+            isShowingPainReminder = false
+        }
+
+        wasPainReminderDue = due
     }
 
     func appWillResignActive() {
@@ -1086,26 +1275,50 @@ final class TimeCircleViewModel: ObservableObject {
             .reduce(0) { $0 + $1.duration }
     }
 
-    /// Pain: each priority owns its own independent timer. Pleasure: all levels share one
-    /// combined daily timer — priority is metadata only and does not affect the budget.
+    /// How far a Pain priority has run past its own 2h budget today, including any currently
+    /// running session's live elapsed time. Zero if that priority isn't over (or isn't tracked).
+    /// Pain never auto-stops or blocks on this — it's purely informational, and its sum across
+    /// all three priorities is borrowed from Pleasure's shared pool (see `remainingFuelToday`).
+    private func painOverageToday(priority: ActivityPriority) -> TimeInterval {
+        var trackedDuration = trackedTime(for: .pain, priority: priority, in: elapsedTodayInterval)
+
+        if state == .running, let selectedTask, selectedTask.activityType == .pain,
+           (selectedTask.priority ?? .medium) == priority {
+            trackedDuration += elapsed
+        }
+
+        return max(trackedDuration - priority.dailyBudgetDuration, 0)
+    }
+
+    private func totalPainOverageToday() -> TimeInterval {
+        ActivityPriority.allCases.reduce(0) { $0 + painOverageToday(priority: $1) }
+    }
+
+    /// Pain: each priority owns its own independent timer, and is allowed to run past it —
+    /// the result goes negative to represent overage rather than clamping at zero. Pleasure:
+    /// all levels share one combined daily timer, reduced by however much Pain has borrowed
+    /// against it today; Pleasure still clamps at zero (it stays blocked once exhausted).
     private func remainingFuelToday(for activityType: ActivityType, priority: ActivityPriority) -> TimeInterval {
         guard activityType == .pain else {
             let trackedDuration = trackedTime(for: activityType, in: elapsedTodayInterval)
-            return max(activityType.totalDailyBudgetDuration - trackedDuration, 0)
+            let effectiveBudget = activityType.totalDailyBudgetDuration - totalPainOverageToday()
+            return max(effectiveBudget - trackedDuration, 0)
         }
 
         let trackedDuration = trackedTime(for: activityType, priority: priority, in: elapsedTodayInterval)
-        return max(priority.dailyBudgetDuration - trackedDuration, 0)
+        return priority.dailyBudgetDuration - trackedDuration
     }
 
     private func hasFuelAvailableToStart(_ task: TaskItem) -> Bool {
         guard task.activityType.usesDailyTarget else { return true }
+        guard task.activityType != .pain else { return true }
 
         return remainingFuelToday(for: task.activityType, priority: task.priority ?? .medium) > 0
     }
 
     private func hasFuelAvailableToResume(_ task: TaskItem) -> Bool {
         guard task.activityType.usesDailyTarget else { return true }
+        guard task.activityType != .pain else { return true }
 
         return elapsed < remainingFuelToday(for: task.activityType, priority: task.priority ?? .medium)
     }
@@ -1114,6 +1327,7 @@ final class TimeCircleViewModel: ObservableObject {
         guard state == .running,
               let selectedTask,
               selectedTask.activityType.usesDailyTarget,
+              selectedTask.activityType != .pain,
               elapsed >= remainingFuelToday(for: selectedTask.activityType, priority: selectedTask.priority ?? .medium)
         else { return }
 
@@ -1205,14 +1419,18 @@ final class TimeCircleViewModel: ObservableObject {
         }
     }
 
+    /// Negative return values represent overage — Pain is allowed to run past its budget, and
+    /// the caller (the ring's center countdown) formats a negative value with a "+" prefix.
+    /// Pleasure still clamps at zero (see `remainingFuelToday`).
     private func targetBalanceToday(for activityType: ActivityType, priority: ActivityPriority, runningElapsed: TimeInterval) -> TimeInterval {
         guard activityType == .pain else {
             let totalTrackedTime = trackedTime(for: activityType, in: elapsedTodayInterval) + runningElapsed
-            return max(activityType.totalDailyBudgetDuration - totalTrackedTime, 0)
+            let effectiveBudget = activityType.totalDailyBudgetDuration - totalPainOverageToday()
+            return max(effectiveBudget - totalTrackedTime, 0)
         }
 
         let totalTrackedTime = trackedTime(for: activityType, priority: priority, in: elapsedTodayInterval) + runningElapsed
-        return max(priority.dailyBudgetDuration - totalTrackedTime, 0)
+        return priority.dailyBudgetDuration - totalTrackedTime
     }
 
     private var elapsedTodayInterval: DateInterval? {
@@ -1364,6 +1582,97 @@ final class TimeCircleViewModel: ObservableObject {
 
     private func saveData() {
         TimeCircleStorage.save(tasks: tasks, sessions: sessions)
+    }
+
+    private func saveToDoItems() {
+        TimeCircleStorage.save(toDoItems: toDoItems)
+    }
+
+    func openAddToDoItemSheet() {
+        editingToDoItemID = nil
+        newToDoItemTitle = ""
+        newToDoItemActivityTaskID = nil
+        newToDoItemActivityType = nil
+        newToDoItemPriority = nil
+        isShowingAddToDoItem = true
+    }
+
+    func openEditToDoItemSheet(_ item: ToDoItem) {
+        editingToDoItemID = item.id
+        newToDoItemTitle = item.title
+        newToDoItemActivityTaskID = item.activityTaskID
+        newToDoItemActivityType = item.activityType
+        newToDoItemPriority = item.manualPriority
+        isShowingAddToDoItem = true
+    }
+
+    func closeAddToDoItemSheet() {
+        isShowingAddToDoItem = false
+        editingToDoItemID = nil
+    }
+
+    func saveToDoItemForm() {
+        let trimmedTitle = newToDoItemTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else { return }
+
+        let resolvedPriority = newToDoItemActivityType?.usesDailyTarget == true ? (newToDoItemPriority ?? .medium) : nil
+
+        if let editingToDoItemID, let index = toDoItems.firstIndex(where: { $0.id == editingToDoItemID }) {
+            toDoItems[index].title = trimmedTitle
+            toDoItems[index].activityTaskID = newToDoItemActivityTaskID
+            toDoItems[index].activityType = newToDoItemActivityType
+            toDoItems[index].manualPriority = newToDoItemActivityTaskID == nil ? resolvedPriority : nil
+        } else {
+            let nextSortOrder = (toDoItems
+                .filter { Calendar.current.isDate($0.day, inSameDayAs: selectedDay) }
+                .map(\.sortOrder)
+                .max() ?? -1) + 1
+
+            let item = ToDoItem(
+                title: trimmedTitle,
+                activityTaskID: newToDoItemActivityTaskID,
+                activityType: newToDoItemActivityType,
+                manualPriority: newToDoItemActivityTaskID == nil ? resolvedPriority : nil,
+                day: selectedDay,
+                sortOrder: nextSortOrder
+            )
+            toDoItems.append(item)
+        }
+
+        saveToDoItems()
+        isShowingAddToDoItem = false
+        editingToDoItemID = nil
+    }
+
+    func deleteToDoItem(id: UUID) {
+        toDoItems.removeAll { $0.id == id }
+        saveToDoItems()
+        isShowingAddToDoItem = false
+        editingToDoItemID = nil
+    }
+
+    func completeToDoItem(_ item: ToDoItem) {
+        guard let index = toDoItems.firstIndex(where: { $0.id == item.id }) else { return }
+        toDoItems[index].isCompleted = true
+        saveToDoItems()
+    }
+
+    func uncompleteToDoItem(_ item: ToDoItem) {
+        guard let index = toDoItems.firstIndex(where: { $0.id == item.id }) else { return }
+        toDoItems[index].isCompleted = false
+        saveToDoItems()
+    }
+
+    func moveToDoItems(from source: IndexSet, to destination: Int) {
+        var dayItems = pendingToDoItemsForSelectedDay
+        dayItems.move(fromOffsets: source, toOffset: destination)
+
+        for (index, item) in dayItems.enumerated() {
+            if let itemIndex = toDoItems.firstIndex(where: { $0.id == item.id }) {
+                toDoItems[itemIndex].sortOrder = index
+            }
+        }
+        saveToDoItems()
     }
 
     func persistActiveTrackingState() {

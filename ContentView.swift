@@ -9,6 +9,7 @@ import AppKit
 
 private enum MainTab {
     case today
+    case todo
     case statistics
 }
 
@@ -22,6 +23,8 @@ struct ContentView: View {
     @State private var isShowingSaveConfirmation = false
     @State private var isDatePillPressed = false
     @State private var isShowingAddOptions = false
+    @State private var isChoosingActivityType = false
+    @State private var browsingActivityType: ActivityType?
     @State private var isShowingMoreOptions = false
     @State private var isShowingDataOptions = false
     @State private var isShowingBackupShareSheet = false
@@ -38,7 +41,7 @@ struct ContentView: View {
     private let activityHeadingToChipSpacing: CGFloat = 7.2
     private let activityChipRowTopPadding: CGFloat = 8
     private let previousDayActivityChipRowTopPadding: CGFloat = 8
-    private let trackingTopBarTopPadding: CGFloat = 0
+    private let trackingTopBarTopPadding: CGFloat = 23
     private let idleControlsTopPadding: CGFloat = 23
     private let trackingTopBarHeight: CGFloat = 36
     private let trackingTopBarHorizontalPadding: CGFloat = 16
@@ -120,27 +123,74 @@ struct ContentView: View {
                 taskDescription: $viewModel.newTaskDescription,
                 taskType: $viewModel.newTaskType,
                 taskPriority: $viewModel.newTaskPriority,
-                onDone: viewModel.addTask
+                onDone: viewModel.addTask,
+                onCancel: viewModel.closeAddTaskSheet
             )
+        }
+        .fullScreenCover(isPresented: $viewModel.isShowingPainReminder) {
+            ReminderView(
+                onClose: {
+                    viewModel.isShowingPainReminder = false
+                },
+                onTakeAction: {
+                    viewModel.isShowingPainReminder = false
+                    browsingActivityType = .pain
+                    isChoosingActivityType = true
+                }
+            )
+        }
+        .sheet(isPresented: $isChoosingActivityType) {
+            NavigationStack {
+                ChooseActivityTypeView(
+                    onCancel: { isChoosingActivityType = false },
+                    onSelect: { type in browsingActivityType = type }
+                )
+                .toolbar(.hidden, for: .navigationBar)
+                .navigationDestination(item: $browsingActivityType) { type in
+                    ChooseActivityListView(
+                        type: type,
+                        tasks: viewModel.tasks.filter { $0.activityType == type },
+                        onBack: { browsingActivityType = nil },
+                        onSelect: { task in
+                            isChoosingActivityType = false
+                            browsingActivityType = nil
+                            if viewModel.selectTaskAndStart(task) {
+                                switchToHourlyPage()
+                            }
+                        },
+                        onCreateNew: {
+                            isChoosingActivityType = false
+                            browsingActivityType = nil
+                            viewModel.openAddTaskSheet()
+                            viewModel.newTaskType = type
+                        }
+                    )
+                    .toolbar(.hidden, for: .navigationBar)
+                }
+            }
         }
         .sheet(isPresented: $viewModel.isShowingTaskPicker) {
-            TaskPickerView(
-                tasks: viewModel.orderedTasksForSelectedDay,
-                groupsByType: true,
-                onSelect: { task in
-                    if viewModel.selectTaskAndStart(task) {
-                        switchToHourlyPage()
-                    }
-                },
-                onCancel: viewModel.closeTaskPicker
-            )
+            NavigationStack {
+                TaskPickerView(
+                    tasks: viewModel.orderedTasksForSelectedDay,
+                    groupsByType: true,
+                    onSelect: { task in
+                        if viewModel.selectTaskAndStart(task) {
+                            switchToHourlyPage()
+                        }
+                    },
+                    onCancel: viewModel.closeTaskPicker
+                )
+            }
         }
         .sheet(isPresented: $viewModel.isShowingManualSessionTaskPicker) {
-            TaskPickerView(
-                tasks: viewModel.orderedTasksForSelectedDay,
-                onSelect: viewModel.openManualSessionEditor,
-                onCancel: viewModel.closeManualSessionTaskPicker
-            )
+            NavigationStack {
+                TaskPickerView(
+                    tasks: viewModel.orderedTasksForSelectedDay,
+                    onSelect: viewModel.openManualSessionEditor,
+                    onCancel: viewModel.closeManualSessionTaskPicker
+                )
+            }
         }
         .sheet(isPresented: $viewModel.isShowingHistoryPicker) {
             NavigationStack {
@@ -274,9 +324,12 @@ struct ContentView: View {
     private var rootContent: some View {
         VStack(spacing: 0) {
             Group {
-                if selectedMainTab == .today {
+                switch selectedMainTab {
+                case .today:
                     trackingView
-                } else {
+                case .todo:
+                    ToDoView(viewModel: viewModel)
+                case .statistics:
                     StatisticsView(viewModel: viewModel)
                 }
             }
@@ -289,17 +342,15 @@ struct ContentView: View {
     }
 
     private var shouldShowMainTabBar: Bool {
-        selectedMainTab == .statistics || (viewModel.isViewingToday && !isShowingActiveCard)
+        selectedMainTab != .today || (viewModel.isViewingToday && !isShowingActiveCard)
     }
 
     private var mainTabBar: some View {
         HStack(spacing: 0) {
-            mainTabBarButton(title: "Today", tab: .today)
+            mainTabBarButton(title: "Chart", tab: .today)
+            mainTabBarButton(title: "To-Do", tab: .todo)
             mainTabBarButton(title: "Statistics", tab: .statistics)
-
-            Spacer(minLength: 0)
         }
-        .padding(.leading, 60.7)
         .padding(.top, 44.8)
         .padding(.bottom, 8)
     }
@@ -317,15 +368,16 @@ struct ContentView: View {
 
                 Rectangle()
                     .fill(isActive ? Color.primary : Color.clear)
-                    .frame(width: 146.7, height: 4.2)
+                    .frame(height: 4.2)
             }
+            .frame(maxWidth: .infinity)
         }
         .buttonStyle(.plain)
     }
 
     private var trackingView: some View {
         GeometryReader { proxy in
-            let topBarTopPadding = trackingTopBarTopPadding + proxy.safeAreaInsets.top
+            let topBarTopPadding = trackingTopBarTopPadding
             let circleSize = min(390, max(280, proxy.size.width - 8))
 
             ZStack {
@@ -339,13 +391,14 @@ struct ContentView: View {
                 topBarPlaceholder(topPadding: topBarTopPadding)
 
                 timelinePager(pageWidth: proxy.size.width, circleSize: circleSize)
+                    .padding(.top, 22.3)
 
                 activityChipSection
                     .padding(.top, 8)
 
                 if isShowingActiveCard {
                     controls
-                        .padding(.top, 16)
+                        .padding(.top, 22)
 
                     Spacer(minLength: 16)
                 } else {
@@ -553,6 +606,8 @@ struct ContentView: View {
         Group {
             if viewModel.state == .stopped {
                 HStack(spacing: 20) {
+                    moreButton
+
                     startTrackingButton
 
                     Button {
@@ -565,8 +620,6 @@ struct ContentView: View {
                             .background(secondaryControlBackground)
                             .clipShape(Circle())
                     }
-
-                    moreButton
                 }
             } else {
                 HStack(spacing: 30) {
@@ -611,8 +664,12 @@ struct ContentView: View {
 
     private var startTrackingButton: some View {
         Button {
-            if viewModel.prepareToStart() {
-                switchToHourlyPage()
+            if viewModel.selectedTask != nil {
+                if viewModel.prepareToStart() {
+                    switchToHourlyPage()
+                }
+            } else {
+                isChoosingActivityType = true
             }
         } label: {
             Image(systemName: "play.fill")
@@ -640,7 +697,7 @@ struct ContentView: View {
     private var activityChipSection: some View {
         Group {
             if viewModel.isViewingToday, viewModel.state != .stopped, let activeChip = activeActivityChip {
-                if let activeTask = viewModel.selectedTask, activeTask.activityType != .none {
+                if let activeTask = viewModel.selectedTask, activeTask.activityType != ActivityType.none {
                     activeActivityPanel(chip: activeChip, task: activeTask)
                 } else {
                     centeredActiveActivityChip(activeChip)
@@ -663,7 +720,7 @@ struct ContentView: View {
         viewModel.isViewingToday
             && viewModel.state != .stopped
             && activeActivityChip != nil
-            && viewModel.selectedTask?.activityType != .none
+            && viewModel.selectedTask?.activityType != ActivityType.none
     }
 
     private var activeActivityChip: TaskChipItem? {
@@ -760,12 +817,12 @@ struct ContentView: View {
     private func cardStat(label: String, value: String, color: Color) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
-                .font(.system(size: 12, weight: .regular))
+                .font(.system(size: 15, weight: .regular))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
 
             Text(value)
-                .font(.system(size: 15, weight: .bold))
+                .font(.system(size: 17, weight: .bold))
                 .foregroundStyle(color)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
@@ -794,7 +851,7 @@ struct ContentView: View {
                     HStack(spacing: 10) {
                         if !viewModel.isViewingToday {
                             Button {
-                                isShowingAddOptions = true
+                                viewModel.openManualSessionTaskPicker()
                             } label: {
                                 Image(systemName: "plus")
                                     .font(.system(size: 16, weight: .bold))
@@ -1026,6 +1083,7 @@ struct ContentView: View {
             let data = try TimeCircleStorage.backupData(
                 tasks: viewModel.tasks,
                 sessions: viewModel.sessions,
+                toDoItems: viewModel.toDoItems,
                 appearanceModeRawValue: appearanceModeRaw
             )
             let url = FileManager.default.temporaryDirectory
@@ -1199,44 +1257,51 @@ private struct TaskPickerView: View {
     var groupsByType = false
     let onSelect: (TaskItem) -> Void
     let onCancel: () -> Void
+    var onCreateNew: (() -> Void)?
 
     var body: some View {
-        NavigationStack {
-            List {
-                if groupsByType {
-                    Text("An activity’s type depends on how it feels before and during it, and it can change over time.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .listRowSeparator(.hidden)
-                        .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 10, trailing: 20))
-                }
+        List {
+            if groupsByType {
+                Text("An activity’s type depends on how it feels before and during it, and it can change over time.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 10, trailing: 20))
+            }
 
-                if tasks.isEmpty {
-                    Text("No activities yet")
-                        .foregroundStyle(.secondary)
-                } else if groupsByType {
-                    ForEach(groupedSections) { section in
-                        Section {
-                            ForEach(section.tasks) { task in
-                                taskRow(task)
-                            }
-                        } header: {
-                            Text(section.headerTitle)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
+            if tasks.isEmpty {
+                Text("No activities yet")
+                    .foregroundStyle(.secondary)
+            } else if groupsByType {
+                ForEach(groupedSections) { section in
+                    Section {
+                        ForEach(section.tasks) { task in
+                            taskRow(task)
                         }
+                    } header: {
+                        Text(section.headerTitle)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
                     }
-                } else {
-                    ForEach(tasks) { task in
-                        taskRow(task)
-                    }
+                }
+            } else {
+                ForEach(tasks) { task in
+                    taskRow(task)
                 }
             }
-            .navigationTitle("Choose Activity")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: onCancel)
+        }
+        .navigationTitle("Choose Activity")
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel", action: onCancel)
+            }
+
+            if let onCreateNew {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(action: onCreateNew) {
+                        Image(systemName: "plus")
+                    }
                 }
             }
         }
@@ -1286,7 +1351,7 @@ private struct TaskPickerSection: Identifiable {
     var title: String {
         switch activityType {
         case .none:
-            return "None"
+            return "Neutral"
         default:
             return activityType.title
         }

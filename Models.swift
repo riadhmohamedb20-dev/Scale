@@ -113,7 +113,7 @@ enum ActivityType: String, CaseIterable, Identifiable, Codable {
     var title: String {
         switch self {
         case .none:
-            return "None"
+            return "Neutral"
         case .pain:
             return "Pain"
         case .pleasure:
@@ -298,6 +298,61 @@ struct SessionItem: Identifiable, Equatable, Codable {
     var formattedDuration: String {
         TimeCircleFormat.elapsed(Int(duration))
     }
+}
+
+struct ToDoItem: Identifiable, Equatable, Codable {
+    var id = UUID()
+    var title: String
+    /// A specific existing activity this task belongs to. Mutually exclusive with
+    /// `activityType` — at most one of the two is ever set at a time.
+    var activityTaskID: UUID?
+    /// A bare Pain/Pleasure/Neutral category, used when the task isn't tied to any
+    /// specific activity yet (e.g. the activity doesn't exist in the app so far).
+    var activityType: ActivityType?
+    /// Only meaningful when `activityType` is set directly (no specific activity) and
+    /// that type uses priority (Pain/Pleasure) — lets a bare-type task still land in the
+    /// High/Medium/Low breakdown on the To-Do screen instead of only specific activities.
+    var manualPriority: ActivityPriority?
+    var day: Date
+    var isCompleted: Bool
+    var sortOrder: Int
+
+    init(
+        id: UUID = UUID(),
+        title: String,
+        activityTaskID: UUID?,
+        activityType: ActivityType? = nil,
+        manualPriority: ActivityPriority? = nil,
+        day: Date,
+        isCompleted: Bool = false,
+        sortOrder: Int = 0
+    ) {
+        self.id = id
+        self.title = title
+        self.activityTaskID = activityTaskID
+        self.activityType = activityType
+        self.manualPriority = activityType?.usesDailyTarget == true ? (manualPriority ?? .medium) : nil
+        self.day = day
+        self.isCompleted = isCompleted
+        self.sortOrder = sortOrder
+    }
+}
+
+/// A row in the To-Do "Activities" list. Top-level groups are Pain/Pleasure/Neutral
+/// (`type` set, `activity` nil) or "Other" (`type` and `activity` nil).
+///
+/// For Pain/Pleasure, the type group's `subGroups` are priority groups (`priority` set,
+/// `activity` nil) — one per High/Medium/Low that actually has a task in it — and each
+/// priority group's own `subGroups` are the specific named activities at that priority.
+/// For Neutral (no priority concept) and "Other", `subGroups` go straight to specific
+/// named activities, skipping the priority layer entirely.
+struct ToDoGroup: Identifiable {
+    var id: String
+    var type: ActivityType?
+    var priority: ActivityPriority?
+    var activity: TaskItem?
+    var items: [ToDoItem]
+    var subGroups: [ToDoGroup]
 }
 
 struct TaskTimeSummary: Identifiable, Equatable {

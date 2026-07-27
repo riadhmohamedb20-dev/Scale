@@ -5,6 +5,7 @@ struct ScaleBackup: Codable {
     var exportedAt: Date
     var tasks: [TaskItem]
     var sessions: [SessionItem]
+    var toDoItems: [ToDoItem]
     var appearanceModeRawValue: String?
 
     init(
@@ -12,12 +13,14 @@ struct ScaleBackup: Codable {
         exportedAt: Date = Date(),
         tasks: [TaskItem],
         sessions: [SessionItem],
+        toDoItems: [ToDoItem] = [],
         appearanceModeRawValue: String?
     ) {
         self.schemaVersion = schemaVersion
         self.exportedAt = exportedAt
         self.tasks = tasks
         self.sessions = sessions
+        self.toDoItems = toDoItems
         self.appearanceModeRawValue = appearanceModeRawValue
     }
 
@@ -26,6 +29,7 @@ struct ScaleBackup: Codable {
         case exportedAt
         case tasks
         case sessions
+        case toDoItems
         case appearanceModeRawValue
     }
 
@@ -36,6 +40,7 @@ struct ScaleBackup: Codable {
         exportedAt = try container.decodeIfPresent(Date.self, forKey: .exportedAt) ?? Date()
         tasks = try container.decode([TaskItem].self, forKey: .tasks)
         sessions = try container.decode([SessionItem].self, forKey: .sessions)
+        toDoItems = try container.decodeIfPresent([ToDoItem].self, forKey: .toDoItems) ?? []
         appearanceModeRawValue = try container.decodeIfPresent(String.self, forKey: .appearanceModeRawValue)
     }
 
@@ -60,6 +65,7 @@ enum ScaleBackupError: Error {
 enum TimeCircleStorage {
     private static let tasksKey = "timeCircleTasks"
     private static let sessionsKey = "timeCircleSessions"
+    private static let toDoItemsKey = "timeCircleToDoItems"
     private static let activeTrackingStateKey = "timeCircleActiveTrackingState"
 
     static let defaultTasks = [
@@ -78,6 +84,14 @@ enum TimeCircleStorage {
 
     static func loadSessions() -> [SessionItem]? {
         loadCodable([SessionItem].self, forKey: sessionsKey)
+    }
+
+    static func save(toDoItems: [ToDoItem]) {
+        saveCodable(toDoItems, forKey: toDoItemsKey)
+    }
+
+    static func loadToDoItems() -> [ToDoItem]? {
+        loadCodable([ToDoItem].self, forKey: toDoItemsKey)
     }
 
     static func save(activeTrackingState: ActiveTrackingState?) {
@@ -100,11 +114,13 @@ enum TimeCircleStorage {
     static func backupData(
         tasks: [TaskItem],
         sessions: [SessionItem],
+        toDoItems: [ToDoItem],
         appearanceModeRawValue: String?
     ) throws -> Data {
         let backup = ScaleBackup(
             tasks: tasks,
             sessions: sessions,
+            toDoItems: toDoItems,
             appearanceModeRawValue: appearanceModeRawValue
         )
         let encoder = JSONEncoder()
