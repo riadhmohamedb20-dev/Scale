@@ -1,6 +1,14 @@
 import SwiftUI
 import Combine
 
+/// One contiguous, colored slice of time within a budget progress bar — the same idea as a
+/// session's colored arc on the TimeCircle ring, just laid out linearly instead.
+struct BudgetContribution: Identifiable {
+    let id = UUID()
+    let color: Color
+    let duration: TimeInterval
+}
+
 final class TimeCircleViewModel: ObservableObject {
     @Published var tasks: [TaskItem] = []
     @Published var sessions: [SessionItem] = []
@@ -472,33 +480,77 @@ final class TimeCircleViewModel: ObservableObject {
             .reduce(0) { $0 + $1.duration }
     }
 
+    /// The TimeCircle center's live "hour" scope display: plain elapsed time counting up like
+    /// a stopwatch, for all three types. Budget draining/overage still exists underneath (via
+    /// `targetBalanceToday`, used for the Live Activity and for enforcement) — this is purely
+    /// what's shown on-screen while actively tracking. Pain shows elapsed for just the priority
+    /// being tracked (its own independent 2h pool, matching that priority's own segment in the
+    /// activity panel below) rather than the combined total across all three priorities.
     var timelineCountdownDisplay: TimeInterval {
         guard isViewingToday, state != .stopped, let selectedTask else { return 0 }
 
-        return targetBalanceToday(for: selectedTask.activityType, priority: selectedTask.priority ?? .medium, runningElapsed: elapsed)
+        if selectedTask.activityType == .pain {
+            let priority = selectedTask.priority ?? .medium
+            return trackedTime(for: .pain, priority: priority, in: elapsedTodayInterval) + elapsed
+        }
+
+        return trackedTime(for: selectedTask.activityType, in: elapsedTodayInterval) + elapsed
     }
 
-    /// Display-only: remaining time from the combined daily budget (all priorities together, or
-    /// Neutral's own flat pool), for the activity information panel. Unlike `timelineCountdownDisplay`
-    /// (which the TimeCircle center uses and which reflects the active priority's own 2h timer for
-    /// Pain), this always reflects the full daily total. Start/resume/auto-stop enforcement is
+    /// Display-only value for the activity information panel's "X / Total" stat and progress
+    /// bar: plain elapsed time counting up like a stopwatch, for all three types. This is
+    /// separate from the TimeCircle center's `timelineCountdownDisplay`, which still shows a
+    /// draining countdown (with "+" overage) for Pain specifically, since that's the one type
+    /// with real per-priority budget pressure. Start/resume/auto-stop enforcement is
     /// untouched — it still uses the per-priority Pain timer or the shared pool via
     /// `remainingFuelToday`/`targetBalanceToday`.
     var dailyBudgetRemainingToday: TimeInterval {
         guard isViewingToday, state != .stopped, let selectedTask else { return 0 }
 
-        let trackedToday = trackedTime(for: selectedTask.activityType, in: elapsedTodayInterval)
+        return trackedTime(for: selectedTask.activityType, in: elapsedTodayInterval) + elapsed
+    }
 
-        switch selectedTask.activityType {
-        case .pleasure:
-            let effectiveBudget = selectedTask.activityType.totalDailyBudgetDuration - totalOverageBorrowedFromPleasureToday()
-            return max(effectiveBudget - (trackedToday + elapsed), 0)
-        case .none:
-            // Neutral never blocks — let this go negative ("+" overage) like Pain does.
-            return selectedTask.activityType.totalDailyBudgetDuration - (trackedToday + elapsed)
-        case .pain:
-            return max(selectedTask.activityType.totalDailyBudgetDuration - (trackedToday + elapsed), 0)
+    private func currentColor(for session: SessionItem) -> Color {
+        (tasks.first { $0.name == session.taskName }?.color ?? session.color).color
+    }
+
+    /// Ordered, contiguous colored time contributions toward `priority`'s own 2h Pain budget
+    /// today — one entry per session, each in that session's own task color, plus the live
+    /// elapsed time if `priority` is the one currently being tracked. Drives the Pain activity
+    /// panel's three-segment progress bar, where each segment fills with whichever tasks
+    /// actually contributed to it (matching how the TimeCircle ring already colors each
+    /// session by its own task), rather than one uniform tint for the whole segment.
+    func painPriorityContributions(_ priority: ActivityPriority) -> [BudgetContribution] {
+        guard let interval = elapsedTodayInterval else { return [] }
+
+        var contributions = clippedSessions(overlapping: interval)
+            .filter { currentActivityType(for: $0) == .pain && currentPriority(for: $0) == priority }
+            .sorted { $0.startTime < $1.startTime }
+            .map { BudgetContribution(color: currentColor(for: $0), duration: $0.duration) }
+
+        if isViewingToday, state != .stopped, let selectedTask, selectedTask.activityType == .pain,
+           (selectedTask.priority ?? .medium) == priority {
+            contributions.append(BudgetContribution(color: selectedTask.color.color, duration: elapsed))
         }
+
+        return contributions
+    }
+
+    /// Same idea as `painPriorityContributions`, for Pleasure/Neutral's single combined bar
+    /// (no priority split).
+    func budgetContributions(for activityType: ActivityType) -> [BudgetContribution] {
+        guard let interval = elapsedTodayInterval else { return [] }
+
+        var contributions = clippedSessions(overlapping: interval)
+            .filter { currentActivityType(for: $0) == activityType }
+            .sorted { $0.startTime < $1.startTime }
+            .map { BudgetContribution(color: currentColor(for: $0), duration: $0.duration) }
+
+        if isViewingToday, state != .stopped, let selectedTask, selectedTask.activityType == activityType {
+            contributions.append(BudgetContribution(color: selectedTask.color.color, duration: elapsed))
+        }
+
+        return contributions
     }
 
     var historySummaries: [DayHistorySummary] {

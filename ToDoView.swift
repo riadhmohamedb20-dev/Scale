@@ -5,6 +5,7 @@ import UIKit
 struct ToDoView: View {
     @ObservedObject var viewModel: TimeCircleViewModel
     var onSwipeToChart: () -> Void = {}
+    var onSwipeToMoney: () -> Void = {}
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("appAppearanceMode") private var appearanceModeRaw = AppAppearanceMode.system.rawValue
     @State private var isDatePillPressed = false
@@ -58,7 +59,7 @@ struct ToDoView: View {
                 }
             }
             .background(Color(activityPickerSystemBackground).ignoresSafeArea())
-            .gesture(swipeToChartGesture)
+            .gesture(swipeGesture)
 
             if viewModel.isViewingToday {
                 floatingAddButton
@@ -331,10 +332,6 @@ struct ToDoView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 24)
-        .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(cardBackground)
-        )
     }
 
     private var floatingAddButton: some View {
@@ -414,17 +411,21 @@ struct ToDoView: View {
         .gesture(datePillGesture)
     }
 
-    private var swipeToChartGesture: some Gesture {
+    private var swipeGesture: some Gesture {
         DragGesture(minimumDistance: 24)
             .onEnded { value in
                 let horizontalDistance = value.translation.width
                 let verticalDistance = value.translation.height
                 let horizontalThreshold: CGFloat = 60
-                let isSwipe = horizontalDistance > horizontalThreshold
-                    && horizontalDistance > abs(verticalDistance)
+                let isSwipe = abs(horizontalDistance) > horizontalThreshold
+                    && abs(horizontalDistance) > abs(verticalDistance)
 
-                if isSwipe {
+                guard isSwipe else { return }
+
+                if horizontalDistance > 0 {
                     onSwipeToChart()
+                } else {
+                    onSwipeToMoney()
                 }
             }
     }

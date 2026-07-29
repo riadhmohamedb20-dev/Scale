@@ -6,6 +6,7 @@ struct ChooseActivityListView: View {
     var onBack: () -> Void
     var onSelect: (TaskItem) -> Void
     var onCreateNew: () -> Void
+    var onLongPress: (TaskItem) -> Void = { _ in }
     @Environment(\.colorScheme) private var colorScheme
 
     private func tasks(for priority: ActivityPriority) -> [TaskItem] {
@@ -174,29 +175,7 @@ struct ChooseActivityListView: View {
     }
 
     private func activityRow(_ task: TaskItem) -> some View {
-        Button {
-            onSelect(task)
-        } label: {
-            HStack(spacing: 14) {
-                Circle()
-                    .fill(task.color.color)
-                    .frame(width: 12, height: 12)
-
-                Text(task.name)
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-
-                Spacer(minLength: 8)
-
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.secondary.opacity(0.6))
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-        }
-        .buttonStyle(.plain)
+        ActivityRow(task: task, onTap: { onSelect(task) }, onLongPress: { onLongPress(task) })
     }
 
     private var addNewActivityCard: some View {
@@ -235,5 +214,51 @@ struct ChooseActivityListView: View {
             )
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct ActivityRow: View {
+    let task: TaskItem
+    let onTap: () -> Void
+    let onLongPress: () -> Void
+
+    @State private var isLongPressing = false
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Circle()
+                .fill(task.color.color)
+                .frame(width: 12, height: 12)
+
+            Text(task.name)
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+
+            Spacer(minLength: 8)
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.secondary.opacity(0.6))
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .opacity(isLongPressing ? 0.6 : 1)
+        .animation(.easeInOut(duration: 0.12), value: isLongPressing)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onTap)
+        .onLongPressGesture(
+            minimumDuration: 0.4,
+            maximumDistance: 16,
+            pressing: { pressing in
+                isLongPressing = pressing
+            },
+            perform: {
+                withAnimation(.easeInOut(duration: 0.08)) {
+                    isLongPressing = false
+                }
+                onLongPress()
+            }
+        )
     }
 }

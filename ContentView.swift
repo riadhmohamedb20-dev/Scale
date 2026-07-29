@@ -146,7 +146,8 @@ struct ContentView: View {
                     recentTasks: viewModel.recentlyTrackedTasks,
                     onCancel: { isChoosingActivityType = false },
                     onSelect: { type in browsingActivityType = type },
-                    onSelectTask: { task in selectTaskFromActivityPicker(task) }
+                    onSelectTask: { task in selectTaskFromActivityPicker(task) },
+                    onLongPressTask: { task in editTaskFromActivityPicker(task) }
                 )
                 .toolbar(.hidden, for: .navigationBar)
                 .navigationDestination(item: $browsingActivityType) { type in
@@ -160,7 +161,8 @@ struct ContentView: View {
                             browsingActivityType = nil
                             viewModel.openAddTaskSheet()
                             viewModel.newTaskType = type
-                        }
+                        },
+                        onLongPress: { task in editTaskFromActivityPicker(task) }
                     )
                     .toolbar(.hidden, for: .navigationBar)
                 }
@@ -325,15 +327,27 @@ struct ContentView: View {
                 case .today:
                     trackingView
                 case .todo:
-                    ToDoView(viewModel: viewModel, onSwipeToChart: {
-                        withAnimation(.easeInOut(duration: 0.25)) {
-                            selectedMainTab = .today
+                    ToDoView(
+                        viewModel: viewModel,
+                        onSwipeToChart: {
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                selectedMainTab = .today
+                            }
+                        },
+                        onSwipeToMoney: {
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                selectedMainTab = .money
+                            }
                         }
-                    })
+                    )
                 case .statistics:
                     StatisticsView(viewModel: viewModel)
                 case .money:
-                    MoneyView(viewModel: viewModel)
+                    MoneyView(viewModel: viewModel, onSwipeToToDo: {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            selectedMainTab = .todo
+                        }
+                    })
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -815,7 +829,6 @@ struct ContentView: View {
 
         let dailyRemaining = viewModel.dailyBudgetRemainingToday
         let dailyTotal = dailyBudgetTotal(for: task)
-        let dailyProgress = dailyTotal > 0 ? min(max(dailyRemaining / dailyTotal, 0), 1) : 0
 
         return VStack(alignment: .leading, spacing: 0) {
             ActivityNameLabel(name: chip.name, color: accentColor) {
@@ -847,9 +860,21 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .padding(.top, 4)
 
-            BudgetProgressBar(progress: dailyProgress, tint: accentColor)
+            if task.activityType == .pain {
+                SegmentedBudgetProgressBar(
+                    segments: ActivityPriority.allCases.map { viewModel.painPriorityContributions($0) },
+                    segmentTotal: ActivityPriority.high.dailyBudgetDuration
+                )
                 .frame(height: 8)
                 .padding(.top, 8)
+            } else {
+                BudgetProgressBar(
+                    contributions: viewModel.budgetContributions(for: task.activityType),
+                    total: dailyTotal
+                )
+                .frame(height: 8)
+                .padding(.top, 8)
+            }
         }
         .padding(16)
         .background(
@@ -969,6 +994,12 @@ struct ContentView: View {
         if viewModel.selectTaskAndStart(task) {
             switchToHourlyPage()
         }
+    }
+
+    private func editTaskFromActivityPicker(_ task: TaskItem) {
+        isChoosingActivityType = false
+        browsingActivityType = nil
+        viewModel.editTask(task)
     }
 
     private func switchToHourlyPage() {
@@ -1211,20 +1242,103 @@ private struct BackupShareSheet: UIViewControllerRepresentable {
 }
 #endif
 
-private struct BudgetProgressBar: View {
-    var progress: Double
-    var tint: Color
+/// Renders each contribution as its own contiguous colored slice, in chronological order,
+/// widths proportional to duration/total — the same idea as how each session already gets its
+/// own colored arc on the TimeCircle ring, just laid out as a straight line instead of a
+/// circle. Contributions that together exceed `total` simply run past the visible width and
+/// get clipped by the caller's shape, which reads as "this bar is full."
+private struct ContiguousFillBar: View {
+    var contributions: [BudgetContribution]
+    var total: TimeInterval
+    /// Caps how far the fill may extend within its slot, leaving the remainder — e.g. the small
+    /// margin before a segment divider notch — untouched no matter how full the data says this
+    /// bar is. `nil` uses the full measured width (the single, non-segmented bar case).
+    var maxFillWidth: CGFloat? = nil
 
     var body: some View {
         GeometryReader { proxy in
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.primary.opacity(0.08))
+            let cap = maxFillWidth ?? proxy.size.width
 
-                Capsule()
-                    .fill(tint)
-                    .frame(width: proxy.size.width * CGFloat(progress))
+            HStack(spacing: 0) {
+                ForEach(contributions) { contribution in
+                    Rectangle()
+                        .fill(contribution.color)
+                        .frame(width: total > 0 ? cap * CGFloat(contribution.duration / total) : 0)
+                }
+
+                Spacer(minLength: 0)
             }
+            .frame(width: cap, alignment: .leading)
+            .clipped()
+        }
+    }
+}
+
+private struct BudgetProgressBar: View {
+    var contributions: [BudgetContribution]
+    var total: TimeInterval
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            Capsule()
+                .fill(Color.primary.opacity(0.08))
+
+            ContiguousFillBar(contributions: contributions, total: total)
+                .clipShape(Capsule())
+        }
+    }
+}
+
+/// Three equal, independent segments (High / Medium / Low, left to right) — Pain's per-priority
+/// budgets are genuinely separate 2h pools, so a single combined bar would misrepresent how much
+/// of any one priority is left. Only the two outer edges of the whole bar are rounded (the very
+/// left edge of the first segment, the very right edge of the last); every inner edge facing a
+/// gap is square, so it reads as one bar sliced into three pieces rather than three independent
+/// pills. Each segment fills with whichever tasks actually contributed to that priority today,
+/// in their own colors, laid out contiguously.
+private struct SegmentedBudgetProgressBar: View {
+    var segments: [[BudgetContribution]]
+    var segmentTotal: TimeInterval
+
+    private let notchMargin: CGFloat = 5
+
+    var body: some View {
+        HStack(spacing: notchMargin) {
+            ForEach(Array(segments.enumerated()), id: \.offset) { index, contributions in
+                SegmentBar(
+                    contributions: contributions,
+                    total: segmentTotal,
+                    roundLeading: index == 0,
+                    roundTrailing: index == segments.count - 1
+                )
+            }
+        }
+    }
+}
+
+private struct SegmentBar: View {
+    var contributions: [BudgetContribution]
+    var total: TimeInterval
+    var roundLeading: Bool
+    var roundTrailing: Bool
+
+    private let radius: CGFloat = 4
+
+    private var shape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            topLeadingRadius: roundLeading ? radius : 0,
+            bottomLeadingRadius: roundLeading ? radius : 0,
+            bottomTrailingRadius: roundTrailing ? radius : 0,
+            topTrailingRadius: roundTrailing ? radius : 0
+        )
+    }
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            shape.fill(Color.primary.opacity(0.08))
+
+            ContiguousFillBar(contributions: contributions, total: total)
+                .clipShape(shape)
         }
     }
 }

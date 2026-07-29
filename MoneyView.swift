@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MoneyView: View {
     @ObservedObject var viewModel: TimeCircleViewModel
+    var onSwipeToToDo: () -> Void = {}
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("appAppearanceMode") private var appearanceModeRaw = AppAppearanceMode.system.rawValue
     @State private var editBudgetText = ""
@@ -37,13 +38,13 @@ struct MoneyView: View {
                     budgetCard
                         .padding(.top, 20)
 
-                    spendingHeader
-                        .padding(.top, 28)
-
                     if viewModel.expensesForSelectedDay.isEmpty {
                         emptyState
-                            .padding(.top, 12)
+                            .padding(.top, 28)
                     } else {
+                        spendingHeader
+                            .padding(.top, 28)
+
                         spendingListCard
                             .padding(.top, 12)
                     }
@@ -52,6 +53,7 @@ struct MoneyView: View {
                 .padding(.bottom, 130)
             }
             .background(Color(activityPickerSystemBackground).ignoresSafeArea())
+            .gesture(swipeGesture)
 
             floatingAddExpenseButton
                 .padding(.bottom, 16)
@@ -113,6 +115,21 @@ struct MoneyView: View {
         .scaleEffect(isDatePillPressed ? 0.98 : 1)
         .animation(.easeInOut(duration: 0.12), value: isDatePillPressed)
         .gesture(datePillGesture)
+    }
+
+    private var swipeGesture: some Gesture {
+        DragGesture(minimumDistance: 24)
+            .onEnded { value in
+                let horizontalDistance = value.translation.width
+                let verticalDistance = value.translation.height
+                let horizontalThreshold: CGFloat = 60
+                let isSwipe = abs(horizontalDistance) > horizontalThreshold
+                    && abs(horizontalDistance) > abs(verticalDistance)
+
+                guard isSwipe, horizontalDistance > 0 else { return }
+
+                onSwipeToToDo()
+            }
     }
 
     private var datePillGesture: some Gesture {
@@ -359,10 +376,6 @@ struct MoneyView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 24)
-        .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(cardBackground)
-        )
     }
 
     private var floatingAddExpenseButton: some View {

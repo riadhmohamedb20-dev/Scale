@@ -5,6 +5,7 @@ struct ChooseActivityTypeView: View {
     var onCancel: () -> Void
     var onSelect: (ActivityType) -> Void
     var onSelectTask: (TaskItem) -> Void = { _ in }
+    var onLongPressTask: (TaskItem) -> Void = { _ in }
     @Environment(\.colorScheme) private var colorScheme
 
     private var isDark: Bool {
@@ -77,18 +78,13 @@ struct ChooseActivityTypeView: View {
     }
 
     private func recentTaskPill(_ task: TaskItem) -> some View {
-        Button {
-            onSelectTask(task)
-        } label: {
-            Text(task.name)
-                .font(.system(size: 16, weight: .bold))
-                .lineLimit(1)
-                .foregroundStyle(primaryTextColor)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(Capsule().fill(task.color.color.opacity(isDark ? 0.35 : 0.25)))
-        }
-        .buttonStyle(.plain)
+        RecentTaskPill(
+            task: task,
+            textColor: primaryTextColor,
+            backgroundOpacity: isDark ? 0.35 : 0.25,
+            onTap: { onSelectTask(task) },
+            onLongPress: { onLongPressTask(task) }
+        )
     }
 
     private var cancelButton: some View {
@@ -140,5 +136,42 @@ struct ChooseActivityTypeView: View {
             )
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct RecentTaskPill: View {
+    let task: TaskItem
+    let textColor: Color
+    let backgroundOpacity: Double
+    let onTap: () -> Void
+    let onLongPress: () -> Void
+
+    @State private var isLongPressing = false
+
+    var body: some View {
+        Text(task.name)
+            .font(.system(size: 16, weight: .bold))
+            .lineLimit(1)
+            .foregroundStyle(textColor)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Capsule().fill(task.color.color.opacity(backgroundOpacity)))
+            .opacity(isLongPressing ? 0.6 : 1)
+            .animation(.easeInOut(duration: 0.12), value: isLongPressing)
+            .contentShape(Capsule())
+            .onTapGesture(perform: onTap)
+            .onLongPressGesture(
+                minimumDuration: 0.4,
+                maximumDistance: 16,
+                pressing: { pressing in
+                    isLongPressing = pressing
+                },
+                perform: {
+                    withAnimation(.easeInOut(duration: 0.08)) {
+                        isLongPressing = false
+                    }
+                    onLongPress()
+                }
+            )
     }
 }
