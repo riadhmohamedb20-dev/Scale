@@ -11,6 +11,7 @@ private enum MainTab {
     case today
     case todo
     case statistics
+    case money
 }
 
 struct ContentView: View {
@@ -142,8 +143,10 @@ struct ContentView: View {
         .sheet(isPresented: $isChoosingActivityType) {
             NavigationStack {
                 ChooseActivityTypeView(
+                    recentTasks: viewModel.recentlyTrackedTasks,
                     onCancel: { isChoosingActivityType = false },
-                    onSelect: { type in browsingActivityType = type }
+                    onSelect: { type in browsingActivityType = type },
+                    onSelectTask: { task in selectTaskFromActivityPicker(task) }
                 )
                 .toolbar(.hidden, for: .navigationBar)
                 .navigationDestination(item: $browsingActivityType) { type in
@@ -151,13 +154,7 @@ struct ContentView: View {
                         type: type,
                         tasks: viewModel.tasks.filter { $0.activityType == type },
                         onBack: { browsingActivityType = nil },
-                        onSelect: { task in
-                            isChoosingActivityType = false
-                            browsingActivityType = nil
-                            if viewModel.selectTaskAndStart(task) {
-                                switchToHourlyPage()
-                            }
-                        },
+                        onSelect: { task in selectTaskFromActivityPicker(task) },
                         onCreateNew: {
                             isChoosingActivityType = false
                             browsingActivityType = nil
@@ -328,9 +325,15 @@ struct ContentView: View {
                 case .today:
                     trackingView
                 case .todo:
-                    ToDoView(viewModel: viewModel)
+                    ToDoView(viewModel: viewModel, onSwipeToChart: {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            selectedMainTab = .today
+                        }
+                    })
                 case .statistics:
                     StatisticsView(viewModel: viewModel)
+                case .money:
+                    MoneyView(viewModel: viewModel)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -347,12 +350,35 @@ struct ContentView: View {
 
     private var mainTabBar: some View {
         HStack(spacing: 0) {
-            mainTabBarButton(title: "Chart", tab: .today)
+            mainTabBarButton(title: "Life Chart", tab: .today)
             mainTabBarButton(title: "To-Do", tab: .todo)
-            mainTabBarButton(title: "Statistics", tab: .statistics)
+            mainTabBarButton(title: "Money", tab: .money)
         }
         .padding(.top, 44.8)
         .padding(.bottom, 8)
+    }
+
+    private func mainTabBarIconName(for tab: MainTab) -> String {
+        switch tab {
+        case .today:
+            return "chart.pie.fill"
+        case .todo:
+            return "checklist.checked"
+        case .statistics:
+            return "chart.bar.fill"
+        case .money:
+            return "cylinder.split.1x2"
+        }
+    }
+
+    @ViewBuilder
+    private func mainTabBarIcon(for tab: MainTab, isActive: Bool) -> some View {
+        let iconSize: CGFloat = isActive ? 24 : 22
+        let tint = isActive ? Color.primary : Color.secondary
+
+        Image(systemName: mainTabBarIconName(for: tab))
+            .font(.system(size: iconSize, weight: .semibold))
+            .foregroundStyle(tint)
     }
 
     private func mainTabBarButton(title: String, tab: MainTab) -> some View {
@@ -361,7 +387,10 @@ struct ContentView: View {
         return Button {
             selectedMainTab = tab
         } label: {
-            VStack(spacing: 8.7) {
+            VStack(spacing: 8) {
+                mainTabBarIcon(for: tab, isActive: isActive)
+                    .frame(height: 24)
+
                 Text(title)
                     .font(.system(size: isActive ? 19 : 17, weight: isActive ? .bold : .regular))
                     .foregroundStyle(isActive ? Color.primary : Color.secondary)
@@ -386,6 +415,7 @@ struct ContentView: View {
                 .onTapGesture {
                     viewModel.clearSelectedTaskFromBackgroundTap()
                 }
+                .gesture(mainTabSwipeGesture)
 
             VStack(spacing: 14) {
                 topBarPlaceholder(topPadding: topBarTopPadding)
@@ -393,8 +423,10 @@ struct ContentView: View {
                 timelinePager(pageWidth: proxy.size.width, circleSize: circleSize)
                     .padding(.top, 22.3)
 
-                activityChipSection
-                    .padding(.top, 8)
+                if shouldShowActivityChipSection {
+                    activityChipSection
+                        .padding(.top, 8)
+                }
 
                 if isShowingActiveCard {
                     controls
@@ -476,8 +508,6 @@ struct ContentView: View {
                 .font(.system(size: 24, weight: .semibold))
                 .foregroundStyle(.primary)
                 .frame(width: 36, height: 36)
-                .background(Color.primary.opacity(0.06))
-                .clipShape(Circle())
         }
         .buttonStyle(.plain)
     }
@@ -532,6 +562,27 @@ struct ContentView: View {
                 } else {
                     withAnimation(.easeInOut(duration: 0.25)) {
                         viewModel.openHistoryPicker()
+                    }
+                }
+            }
+    }
+
+    private var mainTabSwipeGesture: some Gesture {
+        DragGesture(minimumDistance: 24)
+            .onEnded { value in
+                let horizontalDistance = value.translation.width
+                let verticalDistance = value.translation.height
+                let horizontalThreshold: CGFloat = 60
+                let isSwipe = abs(horizontalDistance) > horizontalThreshold
+                    && abs(horizontalDistance) > abs(verticalDistance)
+
+                guard isSwipe else { return }
+
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    if horizontalDistance < 0, selectedMainTab == .today {
+                        selectedMainTab = .todo
+                    } else if horizontalDistance > 0, selectedMainTab == .todo {
+                        selectedMainTab = .today
                     }
                 }
             }
@@ -606,19 +657,37 @@ struct ContentView: View {
         Group {
             if viewModel.state == .stopped {
                 HStack(spacing: 20) {
-                    moreButton
+                    VStack(spacing: 8) {
+                        moreButton
 
-                    startTrackingButton
+                        Text("More")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.primary)
+                    }
 
-                    Button {
-                        isShowingAddOptions = true
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 30, weight: .bold))
-                            .foregroundStyle(secondaryControlIconColor)
-                            .frame(width: 72, height: 72)
-                            .background(secondaryControlBackground)
-                            .clipShape(Circle())
+                    VStack(spacing: 8) {
+                        startTrackingButton
+
+                        Text("Start")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.primary)
+                    }
+
+                    VStack(spacing: 8) {
+                        Button {
+                            isShowingAddOptions = true
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 30, weight: .bold))
+                                .foregroundStyle(secondaryControlIconColor)
+                                .frame(width: 72, height: 72)
+                                .background(secondaryControlBackground)
+                                .clipShape(Circle())
+                        }
+
+                        Text("Add")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.primary)
                     }
                 }
             } else {
@@ -696,12 +765,9 @@ struct ContentView: View {
 
     private var activityChipSection: some View {
         Group {
-            if viewModel.isViewingToday, viewModel.state != .stopped, let activeChip = activeActivityChip {
-                if let activeTask = viewModel.selectedTask, activeTask.activityType != ActivityType.none {
-                    activeActivityPanel(chip: activeChip, task: activeTask)
-                } else {
-                    centeredActiveActivityChip(activeChip)
-                }
+            if viewModel.isViewingToday, viewModel.state != .stopped,
+               let activeChip = activeActivityChip, let activeTask = viewModel.selectedTask {
+                activeActivityPanel(chip: activeChip, task: activeTask)
             } else {
                 VStack(alignment: .leading, spacing: activityHeadingToChipSpacing) {
                     Text("Activities")
@@ -720,7 +786,10 @@ struct ContentView: View {
         viewModel.isViewingToday
             && viewModel.state != .stopped
             && activeActivityChip != nil
-            && viewModel.selectedTask?.activityType != ActivityType.none
+    }
+
+    private var shouldShowActivityChipSection: Bool {
+        !(viewModel.state == .stopped && viewModel.isViewingToday)
     }
 
     private var activeActivityChip: TaskChipItem? {
@@ -732,28 +801,6 @@ struct ContentView: View {
             name: task.name,
             color: task.color
         )
-    }
-
-    private func centeredActiveActivityChip(_ task: TaskChipItem) -> some View {
-        HStack {
-            Spacer()
-
-            TaskChipView(
-                task: task,
-                isActive: true,
-                allowsLongPress: true,
-                onTap: { },
-                onLongPress: {
-                    guard let editingTask = viewModel.activityForEditing(from: task) else { return }
-
-                    viewModel.editTask(editingTask)
-                }
-            )
-
-            Spacer()
-        }
-        .padding(.top, 26)
-        .padding(.bottom, 0)
     }
 
     private func activeActivityPanel(chip: TaskChipItem, task: TaskItem) -> some View {
@@ -780,13 +827,15 @@ struct ContentView: View {
             HStack(alignment: .center, spacing: 10) {
                 cardStat(label: "Type", value: task.activityType.title, color: accentColor)
 
-                cardDivider
+                if task.activityType.hasPriorityTiers {
+                    cardDivider
 
-                cardStat(
-                    label: task.activityType == .pleasure ? "Level" : "Priority",
-                    value: (task.priority ?? .medium).title,
-                    color: accentColor
-                )
+                    cardStat(
+                        label: task.activityType == .pleasure ? "Level" : "Priority",
+                        value: (task.priority ?? .medium).title,
+                        color: accentColor
+                    )
+                }
             }
             .padding(.top, 10)
 
@@ -911,6 +960,14 @@ struct ContentView: View {
             withAnimation(.easeInOut(duration: 0.2)) {
                 proxy.scrollTo(activityChipLeadingSpacerID, anchor: .leading)
             }
+        }
+    }
+
+    private func selectTaskFromActivityPicker(_ task: TaskItem) {
+        isChoosingActivityType = false
+        browsingActivityType = nil
+        if viewModel.selectTaskAndStart(task) {
+            switchToHourlyPage()
         }
     }
 

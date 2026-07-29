@@ -41,6 +41,16 @@ final class TimeCircleViewModel: ObservableObject {
     @Published var isShowingNoFuelAlert = false
     @Published var noFuelAlertMessage = ""
     @Published var isShowingPainReminder = false
+    @Published var expenses: [ExpenseItem] = []
+    @Published var totalBudget: Double = TimeCircleStorage.defaultTotalBudget
+    @Published var isShowingAddExpense = false
+    @Published var isShowingEditBudget = false
+    @Published var editingExpenseID: UUID?
+    @Published var newExpenseTitle = ""
+    @Published var newExpenseMerchant = ""
+    @Published var newExpenseAmountText = ""
+    @Published var newExpenseCategory: ExpenseCategory = .other
+    @Published var newExpenseDate = Date()
 
     private var startTime: Date?
     private var runningStartTime: Date?
@@ -233,7 +243,7 @@ final class TimeCircleViewModel: ObservableObject {
             let directItems = itemsByActivityType[type] ?? []
             let activitiesForType = tasks.filter { $0.activityType == type }
 
-            if type.usesDailyTarget {
+            if type.hasPriorityTiers {
                 let priorityGroups = ActivityPriority.allCases.compactMap { priority -> ToDoGroup? in
                     let directForPriority = directItems.filter { ($0.manualPriority ?? .medium) == priority }
 
@@ -356,6 +366,27 @@ final class TimeCircleViewModel: ObservableObject {
             .map(\.element)
     }
 
+    var recentlyTrackedTasks: [TaskItem] {
+        let calendar = Calendar.current
+        var latestUseByTaskName: [String: Date] = [:]
+
+        for session in sessions where calendar.isDateInToday(session.endTime) {
+            latestUseByTaskName[session.taskName] = max(
+                latestUseByTaskName[session.taskName] ?? session.startTime,
+                session.endTime
+            )
+        }
+
+        for (taskID, date) in recentTaskInteractionDates where calendar.isDateInToday(date) {
+            guard let task = tasks.first(where: { $0.id == taskID }) else { continue }
+            latestUseByTaskName[task.name] = max(latestUseByTaskName[task.name] ?? date, date)
+        }
+
+        return tasks
+            .filter { latestUseByTaskName[$0.name] != nil }
+            .sorted { (latestUseByTaskName[$0.name] ?? .distantPast) > (latestUseByTaskName[$1.name] ?? .distantPast) }
+    }
+
     var taskChipsForSelectedDay: [TaskChipItem] {
         if isViewingToday {
             return orderedTasksForSelectedDay.map { task in
@@ -444,25 +475,30 @@ final class TimeCircleViewModel: ObservableObject {
     var timelineCountdownDisplay: TimeInterval {
         guard isViewingToday, state != .stopped, let selectedTask else { return 0 }
 
-        guard selectedTask.activityType.usesDailyTarget else {
-            return elapsed
-        }
-
         return targetBalanceToday(for: selectedTask.activityType, priority: selectedTask.priority ?? .medium, runningElapsed: elapsed)
     }
 
-    /// Display-only: remaining time from the combined daily budget (all priorities together),
-    /// for the activity information panel. Unlike `timelineCountdownDisplay` (which the TimeCircle
-    /// center uses and which reflects the active priority's own 2h timer for Pain), this always
-    /// reflects the full 6h daily total. Start/resume/auto-stop enforcement is untouched — it still
-    /// uses the per-priority Pain timer or the shared Pleasure timer via `remainingFuelToday`/`targetBalanceToday`.
+    /// Display-only: remaining time from the combined daily budget (all priorities together, or
+    /// Neutral's own flat pool), for the activity information panel. Unlike `timelineCountdownDisplay`
+    /// (which the TimeCircle center uses and which reflects the active priority's own 2h timer for
+    /// Pain), this always reflects the full daily total. Start/resume/auto-stop enforcement is
+    /// untouched — it still uses the per-priority Pain timer or the shared pool via
+    /// `remainingFuelToday`/`targetBalanceToday`.
     var dailyBudgetRemainingToday: TimeInterval {
-        guard isViewingToday, state != .stopped, let selectedTask, selectedTask.activityType.usesDailyTarget else { return 0 }
+        guard isViewingToday, state != .stopped, let selectedTask else { return 0 }
 
         let trackedToday = trackedTime(for: selectedTask.activityType, in: elapsedTodayInterval)
-        let borrowedByPain = selectedTask.activityType == .pleasure ? totalPainOverageToday() : 0
-        let effectiveBudget = selectedTask.activityType.totalDailyBudgetDuration - borrowedByPain
-        return max(effectiveBudget - (trackedToday + elapsed), 0)
+
+        switch selectedTask.activityType {
+        case .pleasure:
+            let effectiveBudget = selectedTask.activityType.totalDailyBudgetDuration - totalOverageBorrowedFromPleasureToday()
+            return max(effectiveBudget - (trackedToday + elapsed), 0)
+        case .none:
+            // Neutral never blocks — let this go negative ("+" overage) like Pain does.
+            return selectedTask.activityType.totalDailyBudgetDuration - (trackedToday + elapsed)
+        case .pain:
+            return max(selectedTask.activityType.totalDailyBudgetDuration - (trackedToday + elapsed), 0)
+        }
     }
 
     var historySummaries: [DayHistorySummary] {
@@ -563,6 +599,24 @@ final class TimeCircleViewModel: ObservableObject {
 
         if let decodedToDoItems = TimeCircleStorage.loadToDoItems() {
             toDoItems = decodedToDoItems
+        }
+
+        if let decodedInteractionDates = TimeCircleStorage.loadRecentTaskInteractionDates() {
+            recentTaskInteractionDates = decodedInteractionDates
+        }
+
+        if let decodedExpenses = TimeCircleStorage.loadExpenses() {
+            expenses = decodedExpenses
+        } else {
+            expenses = TimeCircleStorage.defaultExpenses
+            saveExpenses()
+        }
+
+        if let decodedTotalBudget = TimeCircleStorage.loadTotalBudget() {
+            totalBudget = decodedTotalBudget
+        } else {
+            totalBudget = TimeCircleStorage.defaultTotalBudget
+            saveTotalBudget()
         }
 
         restoreActiveTrackingState()
@@ -1002,7 +1056,7 @@ final class TimeCircleViewModel: ObservableObject {
         guard let editingIndex else { return }
 
         tasks[editingIndex].activityType = activityType
-        if activityType.usesDailyTarget {
+        if activityType.hasPriorityTiers {
             if tasks[editingIndex].priority == nil {
                 tasks[editingIndex].priority = .medium
             }
@@ -1095,9 +1149,7 @@ final class TimeCircleViewModel: ObservableObject {
         }
 
         let intervals = activeIntervalsForSaving(endingAt: Date())
-        let allowedDuration = selectedTask.activityType.usesDailyTarget
-            ? remainingFuelToday(for: selectedTask.activityType, priority: selectedTask.priority ?? .medium)
-            : intervals.reduce(0) { $0 + $1.end.timeIntervalSince($1.start) }
+        let allowedDuration = remainingFuelToday(for: selectedTask.activityType, priority: selectedTask.priority ?? .medium)
         let clippedIntervals = clippedActiveIntervals(intervals, maxDuration: allowedDuration)
         let savedSessions = sessionItems(
             from: clippedIntervals,
@@ -1275,50 +1327,110 @@ final class TimeCircleViewModel: ObservableObject {
             .reduce(0) { $0 + $1.duration }
     }
 
-    /// How far a Pain priority has run past its own 2h budget today, including any currently
-    /// running session's live elapsed time. Zero if that priority isn't over (or isn't tracked).
-    /// Pain never auto-stops or blocks on this — it's purely informational, and its sum across
-    /// all three priorities is borrowed from Pleasure's shared pool (see `remainingFuelToday`).
-    private func painOverageToday(priority: ActivityPriority) -> TimeInterval {
-        var trackedDuration = trackedTime(for: .pain, priority: priority, in: elapsedTodayInterval)
+    /// One chunk of Pain tracking time today, tagged with the priority it was tracked under,
+    /// used to walk today's Pain activity in chronological order for the borrowing cascade below.
+    private struct PainTimeChunk {
+        let priority: ActivityPriority
+        let start: Date
+        let duration: TimeInterval
+    }
 
-        if state == .running, let selectedTask, selectedTask.activityType == .pain,
-           (selectedTask.priority ?? .medium) == priority {
-            trackedDuration += elapsed
+    private func painChunksToday() -> [PainTimeChunk] {
+        guard let interval = elapsedTodayInterval else { return [] }
+
+        var chunks = clippedSessions(overlapping: interval).compactMap { session -> PainTimeChunk? in
+            guard currentActivityType(for: session) == .pain, let priority = currentPriority(for: session) else { return nil }
+
+            return PainTimeChunk(priority: priority, start: session.startTime, duration: session.duration)
         }
 
-        return max(trackedDuration - priority.dailyBudgetDuration, 0)
+        if state == .running, let selectedTask, selectedTask.activityType == .pain {
+            let priority = selectedTask.priority ?? .medium
+
+            for activeInterval in activeIntervalsForSaving(endingAt: now) {
+                let clippedStart = max(activeInterval.start, interval.start)
+                let clippedEnd = min(activeInterval.end, interval.end)
+                guard clippedEnd > clippedStart else { continue }
+
+                chunks.append(PainTimeChunk(priority: priority, start: clippedStart, duration: clippedEnd.timeIntervalSince(clippedStart)))
+            }
+        }
+
+        return chunks.sorted { $0.start < $1.start }
     }
 
-    private func totalPainOverageToday() -> TimeInterval {
-        ActivityPriority.allCases.reduce(0) { $0 + painOverageToday(priority: $1) }
+    /// Simulates today's Pain tracking, in chronological order, against the borrowing cascade:
+    /// High spends its own 2h, then draws from Low, then from Medium, then spills to Pleasure.
+    /// Medium spends its own 2h, then draws from Low, then spills straight to Pleasure (never
+    /// from High). Low spends its own 2h, then spills straight to Pleasure. Because Low/Medium
+    /// are shared reservoirs, whichever priority's overage happens first in real time claims
+    /// whatever headroom is left in them — hence the chronological walk rather than a flat sum.
+    private func painCascadeSpilloverToPleasureToday() -> TimeInterval {
+        var remainingLow = ActivityPriority.low.dailyBudgetDuration
+        var remainingMedium = ActivityPriority.medium.dailyBudgetDuration
+        var remainingHigh = ActivityPriority.high.dailyBudgetDuration
+        var spillover: TimeInterval = 0
+
+        for chunk in painChunksToday() {
+            var leftover = chunk.duration
+
+            switch chunk.priority {
+            case .high:
+                let ownTake = min(leftover, remainingHigh); remainingHigh -= ownTake; leftover -= ownTake
+                let lowTake = min(leftover, remainingLow); remainingLow -= lowTake; leftover -= lowTake
+                let mediumTake = min(leftover, remainingMedium); remainingMedium -= mediumTake; leftover -= mediumTake
+            case .medium:
+                let ownTake = min(leftover, remainingMedium); remainingMedium -= ownTake; leftover -= ownTake
+                let lowTake = min(leftover, remainingLow); remainingLow -= lowTake; leftover -= lowTake
+            case .low:
+                let ownTake = min(leftover, remainingLow); remainingLow -= ownTake; leftover -= ownTake
+            }
+
+            spillover += leftover
+        }
+
+        return spillover
     }
 
-    /// Pain: each priority owns its own independent timer, and is allowed to run past it —
-    /// the result goes negative to represent overage rather than clamping at zero. Pleasure:
-    /// all levels share one combined daily timer, reduced by however much Pain has borrowed
-    /// against it today; Pleasure still clamps at zero (it stays blocked once exhausted).
+    /// Neutral never blocks (see `hasFuelAvailableToStart`); once it runs past its own 12h it
+    /// spills the excess into Pleasure's pool, the same way Pain's overage does.
+    private func neutralSpilloverToPleasureToday() -> TimeInterval {
+        let trackedDuration = trackedTime(for: .none, in: elapsedTodayInterval)
+        return max(trackedDuration - ActivityType.none.totalDailyBudgetDuration, 0)
+    }
+
+    private func totalOverageBorrowedFromPleasureToday() -> TimeInterval {
+        painCascadeSpilloverToPleasureToday() + neutralSpilloverToPleasureToday()
+    }
+
+    /// Pain and Neutral: never blocked — Pain's priorities cascade through Low → Medium →
+    /// Pleasure (see `painCascadeSpilloverToPleasureToday`), and Neutral spills straight to
+    /// Pleasure once its own 12h is spent. Both go negative to represent overage rather than
+    /// clamping at zero. Pleasure is the one pool that still clamps at zero and stays blocked
+    /// once exhausted — it's the final sink everything else borrows against.
     private func remainingFuelToday(for activityType: ActivityType, priority: ActivityPriority) -> TimeInterval {
-        guard activityType == .pain else {
+        switch activityType {
+        case .pain:
+            let trackedDuration = trackedTime(for: activityType, priority: priority, in: elapsedTodayInterval)
+            return priority.dailyBudgetDuration - trackedDuration
+        case .none:
             let trackedDuration = trackedTime(for: activityType, in: elapsedTodayInterval)
-            let effectiveBudget = activityType.totalDailyBudgetDuration - totalPainOverageToday()
+            return activityType.totalDailyBudgetDuration - trackedDuration
+        case .pleasure:
+            let trackedDuration = trackedTime(for: activityType, in: elapsedTodayInterval)
+            let effectiveBudget = activityType.totalDailyBudgetDuration - totalOverageBorrowedFromPleasureToday()
             return max(effectiveBudget - trackedDuration, 0)
         }
-
-        let trackedDuration = trackedTime(for: activityType, priority: priority, in: elapsedTodayInterval)
-        return priority.dailyBudgetDuration - trackedDuration
     }
 
     private func hasFuelAvailableToStart(_ task: TaskItem) -> Bool {
-        guard task.activityType.usesDailyTarget else { return true }
-        guard task.activityType != .pain else { return true }
+        guard task.activityType != .pain, task.activityType != .none else { return true }
 
         return remainingFuelToday(for: task.activityType, priority: task.priority ?? .medium) > 0
     }
 
     private func hasFuelAvailableToResume(_ task: TaskItem) -> Bool {
-        guard task.activityType.usesDailyTarget else { return true }
-        guard task.activityType != .pain else { return true }
+        guard task.activityType != .pain, task.activityType != .none else { return true }
 
         return elapsed < remainingFuelToday(for: task.activityType, priority: task.priority ?? .medium)
     }
@@ -1326,8 +1438,8 @@ final class TimeCircleViewModel: ObservableObject {
     private func enforceFuelLimitIfNeeded() {
         guard state == .running,
               let selectedTask,
-              selectedTask.activityType.usesDailyTarget,
               selectedTask.activityType != .pain,
+              selectedTask.activityType != .none,
               elapsed >= remainingFuelToday(for: selectedTask.activityType, priority: selectedTask.priority ?? .medium)
         else { return }
 
@@ -1356,8 +1468,6 @@ final class TimeCircleViewModel: ObservableObject {
     }
 
     private func showNoFuelAlert(for activityType: ActivityType, priority: ActivityPriority?) {
-        guard activityType.usesDailyTarget else { return }
-
         let priorityLabel = (activityType == .pain) ? priority.map { " (\($0.title))" } ?? "" : ""
         noFuelAlertMessage = "You’ve used all your \(activityType.title)\(priorityLabel) time for today."
         isShowingNoFuelAlert = true
@@ -1423,14 +1533,18 @@ final class TimeCircleViewModel: ObservableObject {
     /// the caller (the ring's center countdown) formats a negative value with a "+" prefix.
     /// Pleasure still clamps at zero (see `remainingFuelToday`).
     private func targetBalanceToday(for activityType: ActivityType, priority: ActivityPriority, runningElapsed: TimeInterval) -> TimeInterval {
-        guard activityType == .pain else {
+        switch activityType {
+        case .pain:
+            let totalTrackedTime = trackedTime(for: activityType, priority: priority, in: elapsedTodayInterval) + runningElapsed
+            return priority.dailyBudgetDuration - totalTrackedTime
+        case .none:
             let totalTrackedTime = trackedTime(for: activityType, in: elapsedTodayInterval) + runningElapsed
-            let effectiveBudget = activityType.totalDailyBudgetDuration - totalPainOverageToday()
+            return activityType.totalDailyBudgetDuration - totalTrackedTime
+        case .pleasure:
+            let totalTrackedTime = trackedTime(for: activityType, in: elapsedTodayInterval) + runningElapsed
+            let effectiveBudget = activityType.totalDailyBudgetDuration - totalOverageBorrowedFromPleasureToday()
             return max(effectiveBudget - totalTrackedTime, 0)
         }
-
-        let totalTrackedTime = trackedTime(for: activityType, priority: priority, in: elapsedTodayInterval) + runningElapsed
-        return priority.dailyBudgetDuration - totalTrackedTime
     }
 
     private var elapsedTodayInterval: DateInterval? {
@@ -1578,6 +1692,7 @@ final class TimeCircleViewModel: ObservableObject {
         guard isViewingToday else { return }
 
         recentTaskInteractionDates[taskID] = Date()
+        TimeCircleStorage.save(recentTaskInteractionDates: recentTaskInteractionDates)
     }
 
     private func saveData() {
@@ -1586,6 +1701,118 @@ final class TimeCircleViewModel: ObservableObject {
 
     private func saveToDoItems() {
         TimeCircleStorage.save(toDoItems: toDoItems)
+    }
+
+    private func saveExpenses() {
+        TimeCircleStorage.save(expenses: expenses)
+    }
+
+    private func saveTotalBudget() {
+        TimeCircleStorage.save(totalBudget: totalBudget)
+    }
+
+    var totalSpent: Double {
+        expenses.reduce(0) { $0 + $1.amount }
+    }
+
+    var remainingBudget: Double {
+        totalBudget - totalSpent
+    }
+
+    var budgetProgress: Double {
+        guard totalBudget > 0 else { return 0 }
+        return min(max(totalSpent / totalBudget, 0), 1)
+    }
+
+    var percentOfBudgetUsed: Double {
+        guard totalBudget > 0 else { return 0 }
+        return max(totalSpent / totalBudget, 0) * 100
+    }
+
+    var expensesByDateDescending: [ExpenseItem] {
+        expenses.sorted { $0.date > $1.date }
+    }
+
+    var expensesForSelectedDay: [ExpenseItem] {
+        expenses
+            .filter { Calendar.current.isDate($0.date, inSameDayAs: selectedDay) }
+            .sorted { $0.date > $1.date }
+    }
+
+    var totalSpentForSelectedDay: Double {
+        expensesForSelectedDay.reduce(0) { $0 + $1.amount }
+    }
+
+    func openAddExpenseSheet() {
+        editingExpenseID = nil
+        newExpenseTitle = ""
+        newExpenseMerchant = ""
+        newExpenseAmountText = ""
+        newExpenseCategory = .other
+        newExpenseDate = isViewingToday ? Date() : selectedDay
+        isShowingAddExpense = true
+    }
+
+    func openEditExpenseSheet(_ expense: ExpenseItem) {
+        editingExpenseID = expense.id
+        newExpenseTitle = expense.title
+        newExpenseMerchant = expense.merchant
+        newExpenseAmountText = String(format: "%.2f", expense.amount)
+        newExpenseCategory = expense.category
+        newExpenseDate = expense.date
+        isShowingAddExpense = true
+    }
+
+    func closeAddExpenseSheet() {
+        isShowingAddExpense = false
+        editingExpenseID = nil
+    }
+
+    func saveExpenseForm() {
+        let trimmedTitle = newExpenseTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty, let amount = Double(newExpenseAmountText), amount > 0 else { return }
+
+        let trimmedMerchant = newExpenseMerchant.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let editingExpenseID, let index = expenses.firstIndex(where: { $0.id == editingExpenseID }) {
+            expenses[index].title = trimmedTitle
+            expenses[index].merchant = trimmedMerchant
+            expenses[index].amount = amount
+            expenses[index].category = newExpenseCategory
+            expenses[index].date = newExpenseDate
+        } else {
+            expenses.append(
+                ExpenseItem(
+                    title: trimmedTitle,
+                    merchant: trimmedMerchant,
+                    amount: amount,
+                    category: newExpenseCategory,
+                    date: newExpenseDate
+                )
+            )
+        }
+
+        saveExpenses()
+        isShowingAddExpense = false
+        editingExpenseID = nil
+    }
+
+    func deleteExpense(id: UUID) {
+        expenses.removeAll { $0.id == id }
+        saveExpenses()
+        isShowingAddExpense = false
+        editingExpenseID = nil
+    }
+
+    func openEditBudgetSheet() {
+        isShowingEditBudget = true
+    }
+
+    func updateTotalBudget(_ newValue: Double) {
+        guard newValue > 0 else { return }
+
+        totalBudget = newValue
+        saveTotalBudget()
     }
 
     func openAddToDoItemSheet() {
@@ -1615,7 +1842,7 @@ final class TimeCircleViewModel: ObservableObject {
         let trimmedTitle = newToDoItemTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else { return }
 
-        let resolvedPriority = newToDoItemActivityType?.usesDailyTarget == true ? (newToDoItemPriority ?? .medium) : nil
+        let resolvedPriority = newToDoItemActivityType?.hasPriorityTiers == true ? (newToDoItemPriority ?? .medium) : nil
 
         if let editingToDoItemID, let index = toDoItems.firstIndex(where: { $0.id == editingToDoItemID }) {
             toDoItems[index].title = trimmedTitle
@@ -1752,13 +1979,14 @@ final class TimeCircleViewModel: ObservableObject {
             return
         }
 
-        // Pain and Pleasure both have a daily budget countdown — targetBalanceToday already
-        // branches correctly between Pain's priority-scoped 2h budget and Pleasure's shared 6h
-        // pool, so this is the exact same value the in-app circular timer shows for either type.
-        // None has no budget and counts up instead, so it gets no countdown end date.
-        let budgetCountdownRemaining: TimeInterval? = selectedTask.activityType.usesDailyTarget
-            ? targetBalanceToday(for: selectedTask.activityType, priority: selectedTask.priority ?? .medium, runningElapsed: elapsed)
-            : nil
+        // All three types now have a daily budget countdown — targetBalanceToday already branches
+        // correctly between Pain's priority-scoped 2h budget and the shared pool (Pleasure's 6h,
+        // Neutral's 12h), so this is the exact same value the in-app circular timer shows.
+        let budgetCountdownRemaining: TimeInterval? = targetBalanceToday(
+            for: selectedTask.activityType,
+            priority: selectedTask.priority ?? .medium,
+            runningElapsed: elapsed
+        )
 
         #if canImport(ActivityKit)
         if #available(iOS 16.2, *) {

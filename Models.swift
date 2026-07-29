@@ -74,7 +74,7 @@ struct TaskItem: Identifiable, Equatable, Codable {
         self.color = color
         self.description = description
         self.activityType = activityType
-        self.priority = activityType.usesDailyTarget ? (priority ?? .medium) : nil
+        self.priority = activityType.hasPriorityTiers ? (priority ?? .medium) : nil
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -95,7 +95,7 @@ struct TaskItem: Identifiable, Equatable, Codable {
         description = try container.decodeIfPresent(String.self, forKey: .description) ?? ""
         activityType = try container.decodeIfPresent(ActivityType.self, forKey: .activityType) ?? .pain
         let decodedPriority = try container.decodeIfPresent(ActivityPriority.self, forKey: .priority)
-        priority = activityType.usesDailyTarget ? (decodedPriority ?? .medium) : nil
+        priority = activityType.hasPriorityTiers ? (decodedPriority ?? .medium) : nil
     }
 }
 
@@ -121,15 +121,23 @@ enum ActivityType: String, CaseIterable, Identifiable, Codable {
         }
     }
 
-    var usesDailyTarget: Bool {
+    /// Whether this type is broken into High/Medium/Low tiers (Pain, Pleasure) versus a single
+    /// flat daily budget with no priority concept (Neutral).
+    var hasPriorityTiers: Bool {
         self == .pain || self == .pleasure
     }
 
-    /// Aggregate of all three priority budgets combined, for display-only rollups (statistics, heatmap).
-    /// Actual budget enforcement happens per-priority via `ActivityPriority.dailyBudgetDuration`.
+    /// For Pain/Pleasure: aggregate of all three priority budgets combined, for display-only
+    /// rollups (statistics, heatmap) — actual enforcement happens per-priority via
+    /// `ActivityPriority.dailyBudgetDuration`. Neutral has no priority tiers, so it owns a single
+    /// flat 12-hour daily budget directly, enforced the same way Pleasure's combined pool is.
     var totalDailyBudgetDuration: TimeInterval {
-        guard usesDailyTarget else { return 0 }
-        return ActivityPriority.allCases.reduce(0) { $0 + $1.dailyBudgetDuration }
+        switch self {
+        case .pain, .pleasure:
+            return ActivityPriority.allCases.reduce(0) { $0 + $1.dailyBudgetDuration }
+        case .none:
+            return 12 * 60 * 60
+        }
     }
 
     init(from decoder: Decoder) throws {
@@ -257,7 +265,7 @@ struct SessionItem: Identifiable, Equatable, Codable {
         self.activityType = activityType
         self.sessionDescription = sessionDescription
         self.subActivityIDs = subActivityIDs
-        self.priority = activityType.usesDailyTarget ? (priority ?? .medium) : nil
+        self.priority = activityType.hasPriorityTiers ? (priority ?? .medium) : nil
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -284,7 +292,7 @@ struct SessionItem: Identifiable, Equatable, Codable {
         sessionDescription = try container.decodeIfPresent(String.self, forKey: .sessionDescription) ?? ""
         subActivityIDs = try container.decodeIfPresent([UUID].self, forKey: .subActivityIDs) ?? []
         let decodedPriority = try container.decodeIfPresent(ActivityPriority.self, forKey: .priority)
-        priority = activityType.usesDailyTarget ? (decodedPriority ?? .medium) : nil
+        priority = activityType.hasPriorityTiers ? (decodedPriority ?? .medium) : nil
     }
 
     var endTime: Date {
@@ -331,7 +339,7 @@ struct ToDoItem: Identifiable, Equatable, Codable {
         self.title = title
         self.activityTaskID = activityTaskID
         self.activityType = activityType
-        self.manualPriority = activityType?.usesDailyTarget == true ? (manualPriority ?? .medium) : nil
+        self.manualPriority = activityType?.hasPriorityTiers == true ? (manualPriority ?? .medium) : nil
         self.day = day
         self.isCompleted = isCompleted
         self.sortOrder = sortOrder
@@ -588,14 +596,15 @@ enum TimeCircleFormat {
     }
 
     static func budgetRemaining(_ seconds: TimeInterval) -> String {
-        let clampedSeconds = max(Int(seconds), 0)
-        let h = clampedSeconds / 3600
-        let m = (clampedSeconds % 3600) / 60
+        let prefix = seconds < 0 ? "+" : ""
+        let absoluteSeconds = abs(Int(seconds))
+        let h = absoluteSeconds / 3600
+        let m = (absoluteSeconds % 3600) / 60
 
         if h > 0 {
-            return String(format: "%dh %02dm", h, m)
+            return String(format: "\(prefix)%dh %02dm", h, m)
         } else {
-            return String(format: "%dm", m)
+            return String(format: "\(prefix)%dm", m)
         }
     }
 

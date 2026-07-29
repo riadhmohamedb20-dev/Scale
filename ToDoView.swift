@@ -4,6 +4,7 @@ import UIKit
 
 struct ToDoView: View {
     @ObservedObject var viewModel: TimeCircleViewModel
+    var onSwipeToChart: () -> Void = {}
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("appAppearanceMode") private var appearanceModeRaw = AppAppearanceMode.system.rawValue
     @State private var isDatePillPressed = false
@@ -57,6 +58,7 @@ struct ToDoView: View {
                 }
             }
             .background(Color(activityPickerSystemBackground).ignoresSafeArea())
+            .gesture(swipeToChartGesture)
 
             if viewModel.isViewingToday {
                 floatingAddButton
@@ -70,7 +72,9 @@ struct ToDoView: View {
 
     private func groupSection(_ group: ToDoGroup) -> some View {
         let isExpanded = expandedGroupIDs.contains(group.id)
-        let tint = group.type?.pickerIconBackground.opacity(0.12) ?? Color.secondary.opacity(0.06)
+        let tint = colorScheme == .dark
+            ? (group.type?.pickerAccentColor.opacity(0.18) ?? Color.secondary.opacity(0.12))
+            : (group.type?.pickerIconBackground.opacity(0.12) ?? Color.secondary.opacity(0.06))
 
         return VStack(alignment: .leading, spacing: 0) {
             groupHeader(group, isExpanded: isExpanded)
@@ -172,14 +176,16 @@ struct ToDoView: View {
 
                 Spacer(minLength: 8)
 
-                Text("\(groupItemCount(group))")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(group.type?.pickerAccentColor ?? .secondary)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 3)
+                let count = groupItemCount(group)
+                Text("\(count) \(count == 1 ? "Task" : "Tasks")")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
                     .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(group.type?.pickerIconBackground ?? Color.secondary.opacity(0.15))
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.secondary.opacity(0.15))
                     )
 
                 Image(systemName: "chevron.down")
@@ -213,7 +219,7 @@ struct ToDoView: View {
                         .foregroundStyle(.white)
                 }
 
-                Text("\(priority.title) \(type.title)")
+                Text("\(priority.title) \(type == .pleasure ? "Level" : "Priority")")
                     .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(priority.pickerAccentColor)
 
@@ -227,7 +233,7 @@ struct ToDoView: View {
         if let type = group.type {
             ZStack {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(type.pickerIconBackground)
+                    .fill(colorScheme == .dark ? type.pickerAccentColor : type.pickerIconBackground)
                     .frame(width: 36, height: 36)
 
                 Image(systemName: type.pickerIconName)
@@ -335,11 +341,17 @@ struct ToDoView: View {
         Button {
             viewModel.openAddToDoItemSheet()
         } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 30, weight: .bold))
-                .foregroundStyle(.primary)
-                .frame(width: 72, height: 72)
-                .background(Circle().fill(cardBackground))
+            VStack(spacing: 8) {
+                Image(systemName: "plus")
+                    .font(.system(size: 30, weight: .bold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 72, height: 72)
+                    .background(Circle().fill(cardBackground))
+
+                Text("Add")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.primary)
+            }
         }
         .buttonStyle(.plain)
     }
@@ -379,8 +391,6 @@ struct ToDoView: View {
                 .font(.system(size: 24, weight: .semibold))
                 .foregroundStyle(.primary)
                 .frame(width: 36, height: 36)
-                .background(Color.primary.opacity(0.06))
-                .clipShape(Circle())
         }
         .buttonStyle(.plain)
     }
@@ -402,6 +412,21 @@ struct ToDoView: View {
         .scaleEffect(isDatePillPressed ? 0.98 : 1)
         .animation(.easeInOut(duration: 0.12), value: isDatePillPressed)
         .gesture(datePillGesture)
+    }
+
+    private var swipeToChartGesture: some Gesture {
+        DragGesture(minimumDistance: 24)
+            .onEnded { value in
+                let horizontalDistance = value.translation.width
+                let verticalDistance = value.translation.height
+                let horizontalThreshold: CGFloat = 60
+                let isSwipe = horizontalDistance > horizontalThreshold
+                    && horizontalDistance > abs(verticalDistance)
+
+                if isSwipe {
+                    onSwipeToChart()
+                }
+            }
     }
 
     private var datePillGesture: some Gesture {

@@ -3,8 +3,21 @@ import SwiftUI
 struct ReminderView: View {
     var onClose: () -> Void
     var onTakeAction: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
 
     private let quote = "Pressing on the pain side of the balance can lead to its opposite—pleasure. Unlike pressing on the pleasure side, the dopamine that comes from pain is indirect and potentially more enduring."
+
+    private var isDark: Bool {
+        colorScheme == .dark
+    }
+
+    private var cardBackground: Color {
+        isDark ? Color.white.opacity(0.14) : Color.black.opacity(0.08)
+    }
+
+    private var vividGlyphColor: Color {
+        Color.black.opacity(0.75)
+    }
 
     var body: some View {
         ScrollView {
@@ -40,9 +53,9 @@ struct ReminderView: View {
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(isDark ? vividGlyphColor : Color.primary)
                     .frame(width: 44, height: 44)
-                    .background(ActivityType.pain.pickerIconBackground)
+                    .background(isDark ? ActivityType.pain.pickerAccentColor : ActivityType.pain.pickerIconBackground)
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
@@ -53,12 +66,12 @@ struct ReminderView: View {
         VStack(spacing: 18) {
             ZStack {
                 Circle()
-                    .fill(ActivityType.pain.pickerIconBackground)
+                    .fill(isDark ? ActivityType.pain.pickerAccentColor.opacity(0.28) : ActivityType.pain.pickerIconBackground)
                     .frame(width: 72, height: 72)
 
                 Image(systemName: "lightbulb")
                     .font(.system(size: 26, weight: .regular))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(isDark ? ActivityType.pain.pickerAccentColor : Color.primary)
             }
 
             Text("Anna Lembke says,")
@@ -89,7 +102,7 @@ struct ReminderView: View {
         .frame(maxWidth: .infinity)
         .background(
             RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .fill(ActivityType.pain.pickerIconBackground.opacity(0.45))
+                .fill(isDark ? cardBackground : ActivityType.pain.pickerIconBackground.opacity(0.45))
         )
     }
 
@@ -98,12 +111,12 @@ struct ReminderView: View {
             HStack(spacing: 14) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(ActivityType.pain.pickerIconBackground)
+                        .fill(isDark ? ActivityType.pain.pickerAccentColor.opacity(0.28) : ActivityType.pain.pickerIconBackground)
                         .frame(width: 48, height: 48)
 
                     Image(systemName: ActivityType.pain.pickerIconName)
                         .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(isDark ? ActivityType.pain.pickerAccentColor : Color.primary)
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -121,18 +134,18 @@ struct ReminderView: View {
 
                 ZStack {
                     Circle()
-                        .fill(ActivityType.pain.pickerIconBackground)
+                        .fill(isDark ? ActivityType.pain.pickerAccentColor : ActivityType.pain.pickerIconBackground)
                         .frame(width: 40, height: 40)
 
                     Image(systemName: "arrow.right")
                         .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(isDark ? vividGlyphColor : Color.primary)
                 }
             }
             .padding(16)
             .background(
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(ActivityType.pain.pickerIconBackground.opacity(0.35))
+                    .fill(isDark ? cardBackground : ActivityType.pain.pickerIconBackground.opacity(0.35))
             )
         }
         .buttonStyle(.plain)

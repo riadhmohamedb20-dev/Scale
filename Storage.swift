@@ -67,11 +67,49 @@ enum TimeCircleStorage {
     private static let sessionsKey = "timeCircleSessions"
     private static let toDoItemsKey = "timeCircleToDoItems"
     private static let activeTrackingStateKey = "timeCircleActiveTrackingState"
+    private static let recentTaskInteractionDatesKey = "timeCircleRecentTaskInteractionDates"
+    private static let expensesKey = "timeCircleExpenses"
+    private static let totalBudgetKey = "timeCircleTotalBudget"
 
     static let defaultTasks = [
         TaskItem(name: "Learning French", color: .red),
         TaskItem(name: "Gym", color: .blue)
     ]
+
+    static let defaultExpenses: [ExpenseItem] = {
+        let calendar = Calendar.current
+        let today = Date()
+
+        func daysAgo(_ days: Int) -> Date {
+            calendar.date(byAdding: .day, value: -days, to: today) ?? today
+        }
+
+        return [
+            ExpenseItem(title: "Groceries", merchant: "Walmart", amount: 48.50, category: .groceries, date: daysAgo(0)),
+            ExpenseItem(title: "Lunch", merchant: "Chipotle", amount: 11.25, category: .food, date: daysAgo(1)),
+            ExpenseItem(title: "Bills", merchant: "Netflix", amount: 15.99, category: .bills, date: daysAgo(2)),
+            ExpenseItem(title: "Other", merchant: "Various", amount: 23.10, category: .other, date: daysAgo(2))
+        ]
+    }()
+
+    static let defaultTotalBudget = 5000.0
+
+    static func save(expenses: [ExpenseItem]) {
+        saveCodable(expenses, forKey: expensesKey)
+    }
+
+    static func loadExpenses() -> [ExpenseItem]? {
+        loadCodable([ExpenseItem].self, forKey: expensesKey)
+    }
+
+    static func save(totalBudget: Double) {
+        UserDefaults.standard.set(totalBudget, forKey: totalBudgetKey)
+    }
+
+    static func loadTotalBudget() -> Double? {
+        guard UserDefaults.standard.object(forKey: totalBudgetKey) != nil else { return nil }
+        return UserDefaults.standard.double(forKey: totalBudgetKey)
+    }
 
     static func save(tasks: [TaskItem], sessions: [SessionItem]) {
         saveCodable(tasks, forKey: tasksKey)
@@ -84,6 +122,14 @@ enum TimeCircleStorage {
 
     static func loadSessions() -> [SessionItem]? {
         loadCodable([SessionItem].self, forKey: sessionsKey)
+    }
+
+    static func save(recentTaskInteractionDates: [UUID: Date]) {
+        saveCodable(recentTaskInteractionDates, forKey: recentTaskInteractionDatesKey)
+    }
+
+    static func loadRecentTaskInteractionDates() -> [UUID: Date]? {
+        loadCodable([UUID: Date].self, forKey: recentTaskInteractionDatesKey)
     }
 
     static func save(toDoItems: [ToDoItem]) {

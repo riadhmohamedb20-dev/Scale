@@ -63,7 +63,7 @@ struct AddToDoItemView: View {
                     selectedTypeRow(selectedType)
                         .padding(.top, 8)
 
-                    if selectedType.usesDailyTarget {
+                    if selectedType.hasPriorityTiers {
                         sectionLabel("PRIORITY")
                             .padding(.top, 24)
 
@@ -202,15 +202,21 @@ struct AddToDoItemView: View {
             Button {
                 viewModel.newToDoItemActivityType = type
                 viewModel.newToDoItemActivityTaskID = nil
-                if type.usesDailyTarget {
+                if type.hasPriorityTiers {
                     viewModel.newToDoItemPriority = viewModel.newToDoItemPriority ?? .medium
                 }
             } label: {
                 HStack(spacing: 14) {
                     ZStack {
-                        Circle()
-                            .fill(type.pickerIconBackground)
-                            .frame(width: 36, height: 36)
+                        if colorScheme == .dark {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(type.pickerAccentColor)
+                                .frame(width: 36, height: 36)
+                        } else {
+                            Circle()
+                                .fill(type.pickerIconBackground)
+                                .frame(width: 36, height: 36)
+                        }
 
                         Image(systemName: type.pickerIconName)
                             .font(.system(size: 15, weight: .medium))

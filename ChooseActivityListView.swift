@@ -6,6 +6,7 @@ struct ChooseActivityListView: View {
     var onBack: () -> Void
     var onSelect: (TaskItem) -> Void
     var onCreateNew: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
 
     private func tasks(for priority: ActivityPriority) -> [TaskItem] {
         tasks.filter { $0.priority == priority }
@@ -20,7 +21,7 @@ struct ChooseActivityListView: View {
                 HStack(spacing: 10) {
                     ZStack {
                         Circle()
-                            .fill(type.pickerIconBackground)
+                            .fill(colorScheme == .dark ? type.pickerAccentColor : type.pickerIconBackground)
                             .frame(width: 44, height: 44)
 
                         Image(systemName: type.pickerIconName)
@@ -44,7 +45,7 @@ struct ChooseActivityListView: View {
                     .foregroundStyle(.secondary)
                     .padding(.top, 12)
 
-                if type.usesDailyTarget {
+                if type.hasPriorityTiers {
                     VStack(spacing: 14) {
                         ForEach(ActivityPriority.allCases) { priority in
                             priorityCard(priority)
@@ -133,7 +134,7 @@ struct ChooseActivityListView: View {
                         .foregroundStyle(.white)
                 }
 
-                Text("\(priority.title) \(type.title)")
+                Text("\(priority.title) \(type == .pleasure ? "Level" : "Priority")")
                     .font(.system(size: 18, weight: .bold))
                     .foregroundStyle(priority.pickerAccentColor)
             }
