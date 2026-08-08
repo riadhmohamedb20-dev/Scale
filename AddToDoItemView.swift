@@ -24,6 +24,10 @@ struct AddToDoItemView: View {
         viewModel.newToDoItemTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var isActivitySelectionMissing: Bool {
+        viewModel.newToDoItemActivityTaskID == nil && viewModel.newToDoItemActivityType == nil
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
@@ -51,6 +55,43 @@ struct AddToDoItemView: View {
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
                             .fill(cardBackground)
                     )
+                    .padding(.top, 8)
+
+                sectionLabel("DESCRIPTION")
+                    .padding(.top, 24)
+
+                multilineField(
+                    text: $viewModel.newToDoItemDescription,
+                    placeholder: "Add a description shared by every occurrence of this task..."
+                )
+                .padding(.top, 8)
+
+                sectionLabel("NOTES FOR THIS DAY")
+                    .padding(.top, 24)
+
+                multilineField(
+                    text: $viewModel.newToDoItemNotes,
+                    placeholder: "Add a note just for this day..."
+                )
+                .padding(.top, 8)
+
+                HStack {
+                    sectionLabel("REPEAT")
+
+                    Spacer()
+
+                    Button {
+                        viewModel.toggleNewToDoRecurringAllWeekdays()
+                    } label: {
+                        Text(viewModel.newToDoItemRecurringWeekdays.count == 7 ? "Deselect All" : "Select All")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.top, 24)
+
+                weekdayPicker
                     .padding(.top, 8)
 
                 sectionLabel("WHICH ACTIVITY?")
@@ -88,6 +129,12 @@ struct AddToDoItemView: View {
                         .padding(.top, 14)
                     }
                 }
+
+                sectionLabel("SUBTASKS")
+                    .padding(.top, 24)
+
+                subtasksSection
+                    .padding(.top, 8)
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 24)
@@ -136,8 +183,8 @@ struct AddToDoItemView: View {
                     .background(Capsule().fill(cardBackground))
             }
             .buttonStyle(.plain)
-            .disabled(isTitleEmpty)
-            .opacity(isTitleEmpty ? 0.4 : 1)
+            .disabled(isTitleEmpty || isActivitySelectionMissing)
+            .opacity((isTitleEmpty || isActivitySelectionMissing) ? 0.4 : 1)
         }
     }
 
@@ -146,6 +193,29 @@ struct AddToDoItemView: View {
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(.secondary)
             .tracking(0.5)
+    }
+
+    private func multilineField(text: Binding<String>, placeholder: String) -> some View {
+        ZStack(alignment: .topLeading) {
+            if text.wrappedValue.isEmpty {
+                Text(placeholder)
+                    .font(.system(size: 16))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 18)
+            }
+
+            TextEditor(text: text)
+                .font(.system(size: 16))
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: 90)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 9)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(cardBackground)
+        )
     }
 
     private var searchField: some View {
@@ -294,6 +364,39 @@ struct AddToDoItemView: View {
         .buttonStyle(.plain)
     }
 
+    /// `Calendar`'s `.weekday` component values (1 = Sunday ... 7 = Saturday) paired with
+    /// their single-letter labels, Sunday-first to match the app's date pill/history picker.
+    private static let weekdaySymbols: [(weekday: Int, label: String)] = [
+        (1, "S"), (2, "M"), (3, "T"), (4, "W"), (5, "T"), (6, "F"), (7, "S")
+    ]
+
+    private var weekdayPicker: some View {
+        HStack(spacing: 6) {
+            ForEach(Self.weekdaySymbols, id: \.weekday) { symbol in
+                weekdayOption(symbol.weekday, label: symbol.label)
+            }
+        }
+    }
+
+    private func weekdayOption(_ weekday: Int, label: String) -> some View {
+        let isSelected = viewModel.newToDoItemRecurringWeekdays.contains(weekday)
+
+        return Button {
+            viewModel.toggleNewToDoRecurringWeekday(weekday)
+        } label: {
+            Text(label)
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(isSelected ? .white : .primary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(isSelected ? Color.accentColor : cardBackground)
+                )
+        }
+        .buttonStyle(.plain)
+    }
+
     private var priorityPicker: some View {
         HStack(spacing: 10) {
             ForEach(ActivityPriority.allCases) { priority in
@@ -356,6 +459,116 @@ struct AddToDoItemView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 14)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var subtasksSection: some View {
+        VStack(spacing: 8) {
+            if !viewModel.newToDoItemSubtasks.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(Array(viewModel.newToDoItemSubtasks.enumerated()), id: \.element.id) { index, subtask in
+                        if index > 0 {
+                            Divider()
+                                .padding(.leading, 16)
+                        }
+                        subtaskRow(subtask, index: index)
+                    }
+                }
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .fill(cardBackground)
+                )
+            }
+
+            addSubtaskButton
+        }
+    }
+
+    private func subtaskRow(_ subtask: SubtaskItem, index: Int) -> some View {
+        let isFirst = index == 0
+        let isLast = index == viewModel.newToDoItemSubtasks.count - 1
+
+        return HStack(spacing: 10) {
+            Circle()
+                .fill(Color.secondary.opacity(0.3))
+                .frame(width: 6, height: 6)
+
+            TextField("Subtask title...", text: subtaskTitleBinding(for: subtask.id))
+                .font(.system(size: 16, weight: .medium))
+
+            Spacer(minLength: 4)
+
+            VStack(spacing: 2) {
+                Button {
+                    viewModel.moveNewToDoSubtask(id: subtask.id, offset: -1)
+                } label: {
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(isFirst ? Color.secondary.opacity(0.25) : Color.secondary)
+                        .frame(width: 20, height: 14)
+                }
+                .buttonStyle(.plain)
+                .disabled(isFirst)
+
+                Button {
+                    viewModel.moveNewToDoSubtask(id: subtask.id, offset: 1)
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(isLast ? Color.secondary.opacity(0.25) : Color.secondary)
+                        .frame(width: 20, height: 14)
+                }
+                .buttonStyle(.plain)
+                .disabled(isLast)
+            }
+
+            Button {
+                viewModel.removeNewToDoSubtask(id: subtask.id)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 18, weight: .regular))
+                    .foregroundStyle(Color.secondary.opacity(0.5))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    private func subtaskTitleBinding(for id: UUID) -> Binding<String> {
+        Binding(
+            get: { viewModel.newToDoItemSubtasks.first(where: { $0.id == id })?.title ?? "" },
+            set: { newValue in
+                if let index = viewModel.newToDoItemSubtasks.firstIndex(where: { $0.id == id }) {
+                    viewModel.newToDoItemSubtasks[index].title = newValue
+                }
+            }
+        )
+    }
+
+    private var addSubtaskButton: some View {
+        Button {
+            viewModel.addNewToDoSubtask()
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "plus.circle.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                Text("Add Subtask")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                Spacer(minLength: 8)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(cardBackground)
+            )
         }
         .buttonStyle(.plain)
     }

@@ -3,6 +3,7 @@ import SwiftUI
 struct AddExpenseView: View {
     @ObservedObject var viewModel: TimeCircleViewModel
     @Environment(\.colorScheme) private var colorScheme
+    @State private var isShowingSaveConfirmation = false
 
     private var cardBackground: Color {
         colorScheme == .light ? Color.black.opacity(0.08) : Color.white.opacity(0.14)
@@ -15,6 +16,28 @@ struct AddExpenseView: View {
     }
 
     var body: some View {
+        ZStack {
+            expenseForm
+
+            if isShowingSaveConfirmation {
+                IntentionConfirmationOverlay(
+                    prompt: "Why are you spending this?",
+                    intention: $viewModel.newExpenseIntention,
+                    doNotShowAgain: $viewModel.newExpenseIntentionDoNotShowAgain,
+                    onCancel: {
+                        isShowingSaveConfirmation = false
+                        viewModel.closeAddExpenseSheet()
+                    },
+                    onConfirm: {
+                        isShowingSaveConfirmation = false
+                        viewModel.saveExpenseForm()
+                    }
+                )
+            }
+        }
+    }
+
+    private var expenseForm: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 header
@@ -33,15 +56,19 @@ struct AddExpenseView: View {
                 sectionLabel("TITLE")
                     .padding(.top, 24)
 
-                TextField("e.g. Groceries", text: $viewModel.newExpenseTitle)
-                    .font(.system(size: 17))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 14)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(cardBackground)
-                    )
-                    .padding(.top, 8)
+                HStack(spacing: 10) {
+                    emojiField
+
+                    TextField("e.g. Groceries", text: $viewModel.newExpenseTitle)
+                        .font(.system(size: 17))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                        .background(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(cardBackground)
+                        )
+                }
+                .padding(.top, 8)
 
                 sectionLabel("MERCHANT (OPTIONAL)")
                     .padding(.top, 24)
@@ -78,16 +105,69 @@ struct AddExpenseView: View {
                 )
                 .padding(.top, 8)
 
-                sectionLabel("CATEGORY")
+                sectionLabel("NOTES (OPTIONAL)")
                     .padding(.top, 24)
 
-                categoryPicker
+                TextField("Add a note", text: $viewModel.newExpenseNotes, axis: .vertical)
+                    .font(.system(size: 17))
+                    .lineLimit(3...8)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(cardBackground)
+                    )
                     .padding(.top, 8)
+
+                if viewModel.editingExpenseID != nil {
+                    sectionLabel("INTENTION (OPTIONAL)")
+                        .padding(.top, 24)
+
+                    TextField("Why did you spend this?", text: $viewModel.newExpenseIntention, axis: .vertical)
+                        .font(.system(size: 17))
+                        .lineLimit(3...8)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                        .background(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(cardBackground)
+                        )
+                        .padding(.top, 8)
+
+                    sectionLabel("CONFIRMATION")
+                        .padding(.top, 24)
+
+                    HStack {
+                        Text("Do not show again")
+                            .font(.system(size: 17))
+                            .foregroundStyle(.primary)
+
+                        Spacer()
+
+                        Toggle("", isOn: $viewModel.newExpenseIntentionDoNotShowAgain)
+                            .labelsHidden()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(cardBackground)
+                    )
+                    .padding(.top, 8)
+                }
+
+                if viewModel.editingExpenseID == nil && !viewModel.recentExpensesForQuickFill.isEmpty {
+                    sectionLabel("RECENT EXPENSES")
+                        .padding(.top, 24)
+
+                    recentExpensesList
+                        .padding(.top, 8)
+                }
 
                 sectionLabel("DATE")
                     .padding(.top, 24)
 
-                DatePicker("", selection: $viewModel.newExpenseDate, displayedComponents: .date)
+                DatePicker("", selection: $viewModel.newExpenseDate, in: ...Date(), displayedComponents: .date)
                     .datePickerStyle(.compact)
                     .labelsHidden()
                     .padding(.horizontal, 16)
@@ -136,7 +216,19 @@ struct AddExpenseView: View {
             Spacer()
 
             Button {
-                viewModel.saveExpenseForm()
+                if viewModel.editingExpenseID == nil {
+                    if let preference = viewModel.expenseIntentionPreference(forTitle: viewModel.newExpenseTitle), preference.doNotShowAgain {
+                        viewModel.newExpenseIntention = preference.intention
+                        viewModel.newExpenseIntentionDoNotShowAgain = true
+                        viewModel.saveExpenseForm()
+                    } else {
+                        viewModel.newExpenseIntention = ""
+                        viewModel.newExpenseIntentionDoNotShowAgain = false
+                        isShowingSaveConfirmation = true
+                    }
+                } else {
+                    viewModel.saveExpenseForm()
+                }
             } label: {
                 Text("Done")
                     .font(.system(size: 17, weight: .semibold))
@@ -158,37 +250,66 @@ struct AddExpenseView: View {
             .tracking(0.5)
     }
 
-    private var categoryPicker: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 78), spacing: 10)], spacing: 10) {
-            ForEach(ExpenseCategory.allCases) { category in
-                categoryOption(category)
+    /// A single-character text field: tapping it brings up the system keyboard, and switching to
+    /// the emoji keyboard lets the user pick literally any emoji rather than a fixed preset list.
+    /// `onChange` trims the field down to just the most recently typed character so it can never
+    /// hold more than one emoji.
+    private var emojiField: some View {
+        TextField("🙂", text: $viewModel.newExpenseEmoji)
+            .font(.system(size: 28))
+            .multilineTextAlignment(.center)
+            .frame(width: 52, height: 52)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(cardBackground)
+            )
+            .onChange(of: viewModel.newExpenseEmoji) { _, newValue in
+                guard let last = newValue.last else { return }
+                viewModel.newExpenseEmoji = String(last)
             }
-        }
     }
 
-    private func categoryOption(_ category: ExpenseCategory) -> some View {
-        let isSelected = viewModel.newExpenseCategory == category
+    private var recentExpensesList: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(viewModel.recentExpensesForQuickFill.enumerated()), id: \.element.id) { index, expense in
+                if index > 0 {
+                    Divider()
+                        .padding(.leading, 70)
+                }
 
-        return Button {
-            viewModel.newExpenseCategory = category
-        } label: {
-            VStack(spacing: 6) {
-                Image(systemName: category.iconName)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(isSelected ? .white : category.iconBackground)
-
-                Text(category.title)
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(isSelected ? .white : .primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                recentExpenseRow(expense)
             }
-            .frame(maxWidth: .infinity)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(cardBackground)
+        )
+    }
+
+    private func recentExpenseRow(_ expense: ExpenseItem) -> some View {
+        Button {
+            viewModel.quickFillExpenseForm(from: expense)
+        } label: {
+            HStack(spacing: 14) {
+                Text(expense.emoji)
+                    .font(.system(size: 20))
+                    .frame(width: 32)
+
+                Text(expense.title)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 8)
+
+                Text(MoneyFormat.currency(expense.amount))
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 16)
             .padding(.vertical, 12)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(isSelected ? category.iconBackground : cardBackground)
-            )
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }

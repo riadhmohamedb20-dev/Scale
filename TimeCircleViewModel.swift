@@ -9,6 +9,15 @@ struct BudgetContribution: Identifiable {
     let duration: TimeInterval
 }
 
+/// What the "Select a Task" screen (and the "No Tasks Yet"/"No Remaining Tasks" prompts) are
+/// currently sourcing their To-Do items from: either a specific activity's own tasks, or the
+/// "General" tasks for a bare type/priority — the latter used by "Continue Without Selecting
+/// an Activity", where there's no specific activity to attach tasks to.
+enum ToDoSelectionSource: Equatable {
+    case activity(UUID)
+    case general(type: ActivityType, priority: ActivityPriority?)
+}
+
 final class TimeCircleViewModel: ObservableObject {
     @Published var tasks: [TaskItem] = []
     @Published var sessions: [SessionItem] = []
@@ -28,6 +37,7 @@ final class TimeCircleViewModel: ObservableObject {
     @Published var newTaskDescription = ""
     @Published var newTaskType: ActivityType?
     @Published var newTaskPriority: ActivityPriority?
+    @Published var newTaskEmoji = ""
     @Published var editingSessionTaskName = ""
     @Published var editingSessionTaskColor: Color = StoredColor.blue.color
     @Published var editingSessionActivityType: ActivityType = .pain
@@ -44,6 +54,10 @@ final class TimeCircleViewModel: ObservableObject {
     @Published var newToDoItemActivityTaskID: UUID?
     @Published var newToDoItemActivityType: ActivityType?
     @Published var newToDoItemPriority: ActivityPriority?
+    @Published var newToDoItemSubtasks: [SubtaskItem] = []
+    @Published var newToDoItemRecurringWeekdays: Set<Int> = []
+    @Published var newToDoItemDescription = ""
+    @Published var newToDoItemNotes = ""
     @Published var state: TrackingState = .stopped
     @Published var now = Date()
     @Published var isShowingNoFuelAlert = false
@@ -57,8 +71,60 @@ final class TimeCircleViewModel: ObservableObject {
     @Published var newExpenseTitle = ""
     @Published var newExpenseMerchant = ""
     @Published var newExpenseAmountText = ""
-    @Published var newExpenseCategory: ExpenseCategory = .other
+    @Published var newExpenseEmoji: String = ExpenseItem.defaultEmoji
     @Published var newExpenseDate = Date()
+    @Published var newExpenseNotes = ""
+    @Published var newExpenseIntention = ""
+    @Published var newExpenseIntentionDoNotShowAgain = false
+    @Published var expenseIntentionPreferences: [String: IntentionPreference] = [:]
+    @Published var debts: [DebtItem] = []
+    @Published var isShowingAddDebt = false
+    @Published var editingDebtID: UUID?
+    @Published var newDebtTitle = ""
+    @Published var newDebtAmountText = ""
+    @Published var newDebtDate = Date()
+    @Published var newDebtNotes = ""
+    @Published var newDebtIntention = ""
+    @Published var newDebtIntentionDoNotShowAgain = false
+    @Published var debtIntentionPreferences: [String: IntentionPreference] = [:]
+    @Published var newDebtIsDateReminderEnabled = false
+    @Published var newDebtScheduledDate = Date()
+    @Published var newDebtIsTimeReminderEnabled = false
+    @Published var newDebtScheduledTime = Date()
+    @Published var isNotificationPermissionDenied = false
+    @Published var isShowingAddMoney = false
+    @Published var newMoneyAmountText = ""
+    @Published var newMoneyDate = Date()
+    @Published var moneyTopUps: [MoneyTopUp] = []
+    @Published var budgetBaselineChanges: [BudgetBaselineChange] = []
+    @Published var currentSessionToDoItemID: UUID?
+    /// Tasks completed while the current tracking session (start-to-stop, across any
+    /// pause/resume gaps) has been active, in completion order. Snapshotted onto the
+    /// saved `SessionItem`(s) when the session ends, then cleared for the next session.
+    private var currentSessionCompletedTasks: [CompletedTaskSnapshot] = []
+    @Published var isSelectingToDoItemForTracking = false
+    @Published var toDoItemSelectionSource: ToDoSelectionSource?
+    @Published var isShowingNoToDoTasksPrompt = false
+    @Published var noToDoTasksPromptSource: ToDoSelectionSource?
+    @Published var isCreatingToDoItemToStartTracking = false
+    @Published var isShowingNoRemainingTasksPrompt = false
+    @Published var noRemainingTasksPromptSource: ToDoSelectionSource?
+
+    // MARK: - Global Reminder
+    @Published var isShowingSettings = false
+    @Published var reminderMessages: [ReminderMessage] = []
+    @Published var remindersEnabledGlobally = true
+    @Published var reminderIntervalMinutes = ReminderInterval.thirtyMinutes.minutes
+    @Published var isShowingGlobalReminder = false
+    @Published var currentReminderMessage: ReminderMessage?
+    @Published var remindLaterMinutes = ReminderInterval.thirtyMinutes.minutes
+    @Published var isDontRemindAgainSelected = false
+    @Published var isAddingReminderMessage = false
+    @Published var editingReminderMessageID: UUID?
+    @Published var newReminderMessageText = ""
+
+    private var nextReminderDate: Date?
+    private var lastShownReminderID: UUID?
 
     private var startTime: Date?
     private var runningStartTime: Date?
@@ -66,19 +132,101 @@ final class TimeCircleViewModel: ObservableObject {
     private var completedActiveIntervals: [ActiveTrackingInterval] = []
     private var recentTaskInteractionDates: [UUID: Date] = [:]
     private var wasPainReminderDue = false
+    private var lastRecurringToDoGenerationDay: Date?
+    private var dismissedNoToDoTasksPromptTaskIDs: Set<UUID> = []
 
     var selectedIndex: Int? {
         guard let selectedTaskID else { return nil }
         return tasks.indices.first { tasks[$0].id == selectedTaskID }
     }
 
+    /// When tracking with "Continue Without Selecting an Activity", this holds an ephemeral
+    /// `TaskItem` (type + optional priority, no name shown in any activity list) that stands
+    /// in for `selectedTask` — it's never added to `tasks`, so it never appears as a pickable
+    /// activity anywhere. `selectedTask` resolves it first so every existing piece of the
+    /// tracking pipeline (budgets, the Live Activity, the ring, chips, session saving) keeps
+    /// working unchanged, exactly as it does for a normal task.
+    @Published var unlinkedTrackingTask: TaskItem?
+
     var selectedTask: TaskItem? {
+        if let unlinkedTrackingTask { return unlinkedTrackingTask }
         guard let selectedIndex else { return nil }
         return tasks[selectedIndex]
     }
 
     var selectedSession: SessionItem? {
         sessions.first { $0.id == selectedSessionID }
+    }
+
+    /// The To-Do task the user picked for the activity currently being tracked, shown in the
+    /// tracking activity card's "Task" row. Cleared whenever tracking resets (see
+    /// `resetCurrentTracking`) so each new session starts without a stale selection.
+    var currentSessionToDoItem: ToDoItem? {
+        guard let currentSessionToDoItemID else { return nil }
+        return toDoItems.first { $0.id == currentSessionToDoItemID }
+    }
+
+    var noToDoTasksPromptDisplayName: String {
+        displayName(for: noToDoTasksPromptSource)
+    }
+
+    /// The toggle only makes sense when there's a specific activity to remember the opt-out
+    /// for — "Continue Without Selecting an Activity" sessions have none.
+    var noToDoTasksPromptShowsDontShowAgainToggle: Bool {
+        if case .activity? = noToDoTasksPromptSource { return true }
+        return false
+    }
+
+    var noRemainingTasksPromptDisplayName: String {
+        displayName(for: noRemainingTasksPromptSource)
+    }
+
+    func displayName(for source: ToDoSelectionSource?) -> String {
+        switch source {
+        case .activity(let taskID):
+            return tasks.first { $0.id == taskID }?.name ?? "This activity"
+        case .general(let type, let priority):
+            guard type.hasPriorityTiers, let priority else { return type.title }
+            let label = type == .pleasure ? "Level" : "Priority"
+            return "\(type.title) (\(priority.title) \(label))"
+        case nil:
+            return "This activity"
+        }
+    }
+
+    /// Incomplete To-Do tasks assigned specifically to this activity (not just its bare type).
+    func toDoItemsAvailableForTracking(_ task: TaskItem) -> [ToDoItem] {
+        toDoItems.filter { $0.activityTaskID == task.id && !$0.isCompleted }
+    }
+
+    /// Incomplete "General" To-Do tasks for a bare type/priority — i.e. tasks created without
+    /// picking a specific activity. This is what "Continue Without Selecting an Activity"
+    /// sources its Select-a-Task screen from, instead of a specific activity's own tasks.
+    func toDoItemsAvailableForTracking(generalType type: ActivityType, priority: ActivityPriority?) -> [ToDoItem] {
+        toDoItems.filter {
+            $0.activityTaskID == nil
+                && $0.activityType == type
+                && (!type.hasPriorityTiers || ($0.manualPriority ?? .medium) == (priority ?? .medium))
+                && !$0.isCompleted
+        }
+    }
+
+    func toDoItems(for source: ToDoSelectionSource) -> [ToDoItem] {
+        switch source {
+        case .activity(let taskID):
+            guard let task = tasks.first(where: { $0.id == taskID }) else { return [] }
+            return toDoItemsAvailableForTracking(task)
+        case .general(let type, let priority):
+            return toDoItemsAvailableForTracking(generalType: type, priority: priority)
+        }
+    }
+
+    /// True once the user has opted out ("Don't show this again") of the no-tasks-yet prompt
+    /// for this activity — task tracking is effectively disabled for it until it gets a task
+    /// again, at which point `toDoItemsAvailableForTracking` becomes non-empty and this no
+    /// longer matters for display purposes.
+    func hasOptedOutOfTaskTracking(_ task: TaskItem) -> Bool {
+        dismissedNoToDoTasksPromptTaskIDs.contains(task.id)
     }
 
     private var lastPainSessionEnd: Date? {
@@ -88,12 +236,36 @@ final class TimeCircleViewModel: ObservableObject {
             .max()
     }
 
+    /// Quiet hours during which the Pain reminder never fires, regardless of how overdue it
+    /// is — 11:30 PM through 9:30 AM.
+    private var isWithinPainReminderQuietHours: Bool {
+        let components = Calendar.current.dateComponents([.hour, .minute], from: now)
+        guard let hour = components.hour, let minute = components.minute else { return false }
+
+        let minutesSinceMidnight = hour * 60 + minute
+        let quietStart = 23 * 60 + 30
+        let quietEnd = 9 * 60 + 30
+
+        return minutesSinceMidnight >= quietStart || minutesSinceMidnight < quietEnd
+    }
+
     /// True once 60 minutes have passed since the last Pain session ended (or since the
     /// start of today, if none has happened yet today), unless a Pain activity is being
-    /// tracked right now. Only checked while the app is open — there's no background
-    /// notification system, so this piggybacks on the per-second `now` tick.
+    /// tracked right now or it's currently quiet hours (11:30 PM–9:30 AM). Only checked while
+    /// the app is open — there's no background notification system, so this piggybacks on the
+    /// per-second `now` tick.
+    ///
+    /// Shares `remindersEnabledGlobally` with the global reminder popup (see Reminders
+    /// Settings) — that's the single enable/disable switch for every reminder entry point in
+    /// the app, so turning it off here also stops this Pain-specific reminder from appearing.
     var isPainReminderDue: Bool {
+        guard remindersEnabledGlobally else { return false }
+
         if state != .stopped, let selectedTask, selectedTask.activityType == .pain {
+            return false
+        }
+
+        if isWithinPainReminderQuietHours {
             return false
         }
 
@@ -118,6 +290,13 @@ final class TimeCircleViewModel: ObservableObject {
         return sessions.first { $0.id == editingSessionID }
     }
 
+    /// The immutable snapshot of tasks completed during this saved session, in completion
+    /// order. Read directly off the stored `SessionItem` — never recomputed from live
+    /// `ToDoItem` state, so edits/deletions to those tasks afterward have no effect here.
+    var editingSessionCompletedTasks: [CompletedTaskSnapshot] {
+        editingSession?.completedTasks ?? []
+    }
+
     var editingTaskName: String {
         editingTask?.name ?? ""
     }
@@ -136,6 +315,10 @@ final class TimeCircleViewModel: ObservableObject {
 
     var editingTaskPriority: ActivityPriority? {
         editingTask?.priority
+    }
+
+    var editingTaskEmoji: String {
+        editingTask?.emoji ?? ""
     }
 
     var isEditingTask: Bool {
@@ -202,9 +385,18 @@ final class TimeCircleViewModel: ObservableObject {
             .sorted { $0.startTime < $1.startTime }
     }
 
+    /// Tasks due on `selectedDay`, plus any still-incomplete tasks carried forward from
+    /// earlier days — an incomplete task keeps reappearing on every later day until it's
+    /// completed, at which point it drops out here and remains visible only on its
+    /// original day (via `completedToDoItemsForSelectedDay`'s exact-day match).
     var toDoItemsForSelectedDay: [ToDoItem] {
         toDoItems
-            .filter { Calendar.current.isDate($0.day, inSameDayAs: selectedDay) }
+            .filter { item in
+                if Calendar.current.isDate(item.day, inSameDayAs: selectedDay) {
+                    return true
+                }
+                return item.day < selectedDay && !item.isCompleted
+            }
             .sorted { $0.sortOrder < $1.sortOrder }
     }
 
@@ -219,29 +411,29 @@ final class TimeCircleViewModel: ObservableObject {
         toDoItemsForSelectedDay.filter(\.isCompleted)
     }
 
-    /// Top level is always Pain / Pleasure / Neutral (in that order), plus a trailing
-    /// "Other" for fully-unlinked items. Past days only ever include what was completed
-    /// that day, so a group with nothing completed simply doesn't appear.
+    /// Top level is always Pain / Pleasure / Other (in that order) — every task belongs to
+    /// one of the three, so there's no separate trailing bucket for unassigned tasks. (Any
+    /// legacy item saved before that was required, with neither `activityTaskID` nor
+    /// `activityType` set, simply folds into Other rather than getting its own section.)
+    /// Past days only ever include what was completed that day, so a group with nothing
+    /// completed simply doesn't appear.
     ///
     /// Pain/Pleasure additionally nest a priority layer (High/Medium/Low) between the
     /// type and its activities — only priority buckets that actually contain a task are
     /// shown. A bare-type item (no specific activity) still lands in the right bucket via
-    /// its own `manualPriority`. Neutral has no priority concept, so it nests activities
+    /// its own `manualPriority`. Other has no priority concept, so it nests activities
     /// directly under the type, same as before.
     var toDoGroupsForSelectedDay: [ToDoGroup] {
         let relevantItems = isViewingToday ? toDoItemsForSelectedDay : completedToDoItemsForSelectedDay
 
         var itemsByActivityID: [UUID: [ToDoItem]] = [:]
         var itemsByActivityType: [ActivityType: [ToDoItem]] = [:]
-        var otherItems: [ToDoItem] = []
 
         for item in relevantItems {
             if let activityTaskID = item.activityTaskID {
                 itemsByActivityID[activityTaskID, default: []].append(item)
-            } else if let activityType = item.activityType {
-                itemsByActivityType[activityType, default: []].append(item)
             } else {
-                otherItems.append(item)
+                itemsByActivityType[item.activityType ?? .none, default: []].append(item)
             }
         }
 
@@ -281,8 +473,6 @@ final class TimeCircleViewModel: ObservableObject {
                     )
                 }
 
-                guard isViewingToday || !priorityGroups.isEmpty else { continue }
-
                 groups.append(ToDoGroup(
                     id: "type-\(type.rawValue)",
                     type: type,
@@ -304,8 +494,6 @@ final class TimeCircleViewModel: ObservableObject {
                     )
                 }
 
-                guard isViewingToday || !directItems.isEmpty || !activitySubGroups.isEmpty else { continue }
-
                 groups.append(ToDoGroup(
                     id: "type-\(type.rawValue)",
                     type: type,
@@ -315,10 +503,6 @@ final class TimeCircleViewModel: ObservableObject {
                     subGroups: activitySubGroups
                 ))
             }
-        }
-
-        if !otherItems.isEmpty {
-            groups.append(ToDoGroup(id: "other", type: nil, priority: nil, activity: nil, items: sortedByCompletion(otherItems), subGroups: []))
         }
 
         return groups
@@ -494,6 +678,13 @@ final class TimeCircleViewModel: ObservableObject {
             return trackedTime(for: .pain, priority: priority, in: elapsedTodayInterval) + elapsed
         }
 
+        // Neutral doesn't carry prior sessions into the live timer — each new session starts
+        // counting from 00:00:00, even though its cumulative daily total (used for budgets and
+        // the activity panel stat) keeps accumulating underneath.
+        if selectedTask.activityType == .none {
+            return elapsed
+        }
+
         return trackedTime(for: selectedTask.activityType, in: elapsedTodayInterval) + elapsed
     }
 
@@ -653,6 +844,10 @@ final class TimeCircleViewModel: ObservableObject {
             toDoItems = decodedToDoItems
         }
 
+        if let decodedDismissedIDs = TimeCircleStorage.loadDismissedNoToDoTasksPromptTaskIDs() {
+            dismissedNoToDoTasksPromptTaskIDs = decodedDismissedIDs
+        }
+
         if let decodedInteractionDates = TimeCircleStorage.loadRecentTaskInteractionDates() {
             recentTaskInteractionDates = decodedInteractionDates
         }
@@ -671,8 +866,46 @@ final class TimeCircleViewModel: ObservableObject {
             saveTotalBudget()
         }
 
+        if let decodedDebts = TimeCircleStorage.loadDebts() {
+            debts = decodedDebts
+        }
+
+        if let decodedMoneyTopUps = TimeCircleStorage.loadMoneyTopUps() {
+            moneyTopUps = decodedMoneyTopUps
+        }
+
+        if let decodedBudgetBaselineChanges = TimeCircleStorage.loadBudgetBaselineChanges() {
+            budgetBaselineChanges = decodedBudgetBaselineChanges
+        }
+
+        if let decodedExpenseIntentionPreferences = TimeCircleStorage.loadExpenseIntentionPreferences() {
+            expenseIntentionPreferences = decodedExpenseIntentionPreferences
+        }
+
+        if let decodedDebtIntentionPreferences = TimeCircleStorage.loadDebtIntentionPreferences() {
+            debtIntentionPreferences = decodedDebtIntentionPreferences
+        }
+
+        if let decodedReminderMessages = TimeCircleStorage.loadReminderMessages() {
+            reminderMessages = decodedReminderMessages
+        } else {
+            reminderMessages = TimeCircleStorage.defaultReminderMessages
+            saveReminderMessages()
+        }
+
+        remindersEnabledGlobally = TimeCircleStorage.loadRemindersEnabled() ?? true
+        reminderIntervalMinutes = TimeCircleStorage.loadReminderIntervalMinutes() ?? ReminderInterval.thirtyMinutes.minutes
+        remindLaterMinutes = reminderIntervalMinutes
+        nextReminderDate = TimeCircleStorage.loadNextReminderDate()
+        lastShownReminderID = TimeCircleStorage.loadLastShownReminderID()
+
+        if remindersEnabledGlobally, nextReminderDate == nil {
+            scheduleNextReminder(minutesFromNow: reminderIntervalMinutes)
+        }
+
         restoreActiveTrackingState()
         ensureValidSelectedTask()
+        generateDueRecurringToDoOccurrences()
     }
 
     func replaceData(with backup: ScaleBackup) {
@@ -705,6 +938,8 @@ final class TimeCircleViewModel: ObservableObject {
         ensureValidActiveTrackingState()
         enforceFuelLimitIfNeeded()
         updatePainReminderState()
+        checkGlobalReminderSchedule()
+        generateDueRecurringToDoOccurrences()
     }
 
     /// Surfaces the reminder the moment the due condition freshly becomes true, and
@@ -723,6 +958,127 @@ final class TimeCircleViewModel: ObservableObject {
         wasPainReminderDue = due
     }
 
+    /// Checks whether the app-wide reminder is due, entirely independent of what page is
+    /// currently on screen or whether an activity is being tracked — the popup is presented
+    /// via a separate always-on-top window (see `GlobalReminderPresenter`), so this never needs
+    /// to know about navigation state to be able to fire.
+    private func checkGlobalReminderSchedule() {
+        guard remindersEnabledGlobally, !isShowingGlobalReminder else { return }
+        guard let nextReminderDate, now >= nextReminderDate else { return }
+        guard let message = randomEnabledReminderMessage() else { return }
+
+        currentReminderMessage = message
+        remindLaterMinutes = reminderIntervalMinutes
+        isDontRemindAgainSelected = false
+        isShowingGlobalReminder = true
+
+        lastShownReminderID = message.id
+        TimeCircleStorage.save(lastShownReminderID: message.id)
+    }
+
+    /// Picks a random enabled message, avoiding an immediate repeat of the last one shown
+    /// whenever more than one enabled message exists.
+    private func randomEnabledReminderMessage() -> ReminderMessage? {
+        let enabled = reminderMessages.filter(\.isEnabled)
+        guard !enabled.isEmpty else { return nil }
+
+        if enabled.count > 1, let lastShownReminderID {
+            let candidates = enabled.filter { $0.id != lastShownReminderID }
+            if let choice = candidates.randomElement() {
+                return choice
+            }
+        }
+
+        return enabled.randomElement()
+    }
+
+    private func scheduleNextReminder(minutesFromNow minutes: Int) {
+        let date = now.addingTimeInterval(TimeInterval(minutes * 60))
+        nextReminderDate = date
+        TimeCircleStorage.save(nextReminderDate: date)
+    }
+
+    /// Resolves the popup for any of its three outcomes. "Don't remind again" takes priority if
+    /// selected; otherwise the next reminder is scheduled using `remindLaterMinutes`, which is
+    /// reset to the standing default interval every time a reminder appears — so leaving it
+    /// untouched and tapping "Got it" reproduces the existing schedule exactly, while changing
+    /// it first postpones by that chosen amount instead.
+    func resolveGlobalReminder() {
+        if isDontRemindAgainSelected {
+            remindersEnabledGlobally = false
+            TimeCircleStorage.save(remindersEnabled: false)
+            nextReminderDate = nil
+            TimeCircleStorage.save(nextReminderDate: nil)
+        } else {
+            scheduleNextReminder(minutesFromNow: remindLaterMinutes)
+        }
+
+        isShowingGlobalReminder = false
+        currentReminderMessage = nil
+        isDontRemindAgainSelected = false
+    }
+
+    func setRemindersEnabledGlobally(_ isEnabled: Bool) {
+        remindersEnabledGlobally = isEnabled
+        TimeCircleStorage.save(remindersEnabled: isEnabled)
+
+        if isEnabled, nextReminderDate == nil {
+            scheduleNextReminder(minutesFromNow: reminderIntervalMinutes)
+        }
+    }
+
+    func setReminderIntervalMinutes(_ minutes: Int) {
+        reminderIntervalMinutes = minutes
+        TimeCircleStorage.save(reminderIntervalMinutes: minutes)
+    }
+
+    private func saveReminderMessages() {
+        TimeCircleStorage.save(reminderMessages: reminderMessages)
+    }
+
+    func openAddReminderMessageSheet() {
+        editingReminderMessageID = nil
+        newReminderMessageText = ""
+        isAddingReminderMessage = true
+    }
+
+    func openEditReminderMessageSheet(_ message: ReminderMessage) {
+        editingReminderMessageID = message.id
+        newReminderMessageText = message.text
+        isAddingReminderMessage = true
+    }
+
+    func closeAddReminderMessageSheet() {
+        isAddingReminderMessage = false
+        editingReminderMessageID = nil
+    }
+
+    func saveReminderMessageForm() {
+        let trimmed = newReminderMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        if let editingReminderMessageID, let index = reminderMessages.firstIndex(where: { $0.id == editingReminderMessageID }) {
+            reminderMessages[index].text = trimmed
+        } else {
+            reminderMessages.append(ReminderMessage(text: trimmed))
+        }
+
+        saveReminderMessages()
+        isAddingReminderMessage = false
+        editingReminderMessageID = nil
+    }
+
+    func deleteReminderMessage(_ message: ReminderMessage) {
+        reminderMessages.removeAll { $0.id == message.id }
+        saveReminderMessages()
+    }
+
+    func setReminderMessageEnabled(_ message: ReminderMessage, isEnabled: Bool) {
+        guard let index = reminderMessages.firstIndex(where: { $0.id == message.id }) else { return }
+        reminderMessages[index].isEnabled = isEnabled
+        saveReminderMessages()
+    }
+
     func appWillResignActive() {
         persistActiveTrackingState()
     }
@@ -736,6 +1092,7 @@ final class TimeCircleViewModel: ObservableObject {
             persistActiveTrackingState()
             syncLiveActivityIfNeeded()
         }
+        generateDueRecurringToDoOccurrences()
     }
 
     func selectTask(_ task: TaskItem) {
@@ -953,6 +1310,7 @@ final class TimeCircleViewModel: ObservableObject {
         newTaskDescription = ""
         newTaskType = nil
         newTaskPriority = nil
+        newTaskEmoji = ""
         isAddingTask = true
     }
 
@@ -1009,7 +1367,47 @@ final class TimeCircleViewModel: ObservableObject {
         return start()
     }
 
-    func selectTaskAndStart(_ task: TaskItem) -> Bool {
+    /// "Continue Without Selecting an Activity" — marks an ephemeral, unlisted `TaskItem`
+    /// carrying just the chosen type (and priority, for Pain/Pleasure) as selected, without
+    /// starting the timer yet. This mirrors `selectTask(_:)` exactly: pair with
+    /// `evaluateGeneralPostSelectionToDoGate` and eventually `beginTrackingSelectedTask()`,
+    /// same as a specific activity goes through `evaluatePostSelectionToDoGate`. Once tracking
+    /// does begin, the saved session ends up identical in shape to any other (see
+    /// `stopAndSave`/`sessionItems`), just tagged with a name that never matches a real
+    /// activity — e.g. "Pain (No Activity)" — so history, Statistics, and the Life Chart can
+    /// tell it apart from a linked activity's sessions at a glance.
+    @discardableResult
+    func prepareUnlinkedActivitySelection(type: ActivityType, priority: ActivityPriority?) -> Bool {
+        guard state == .stopped, isViewingToday else { return false }
+
+        let resolvedPriority = type.hasPriorityTiers ? (priority ?? .medium) : nil
+        let task = TaskItem(
+            name: "\(type.title) (No Activity)",
+            color: StoredColor(from: type.pickerAccentColor),
+            activityType: type,
+            priority: resolvedPriority
+        )
+
+        guard hasFuelAvailableToStart(task) else {
+            showNoFuelAlert(for: task.activityType, priority: task.priority)
+            return false
+        }
+
+        resetCurrentTracking()
+        unlinkedTrackingTask = task
+        selectedTaskID = task.id
+        selectedReviewTaskName = nil
+        highlightedReviewSessionIDs = []
+        selectedSessionID = nil
+
+        return true
+    }
+
+    /// Marks `task` as selected without starting the timer — used when further user input
+    /// (a To-Do task pick, or the "no tasks yet" decision) must happen before tracking begins.
+    /// Pair with `beginTrackingSelectedTask()` once that input is resolved.
+    @discardableResult
+    func selectTask(_ task: TaskItem) -> Bool {
         guard state == .stopped, isViewingToday else { return false }
         guard hasFuelAvailableToStart(task) else {
             closeTaskPicker()
@@ -1024,12 +1422,27 @@ final class TimeCircleViewModel: ObservableObject {
         selectedSessionID = nil
         resetCurrentTracking()
         closeTaskPicker()
+        return true
+    }
+
+    @discardableResult
+    func beginTrackingSelectedTask() -> Bool {
+        guard selectedTaskID != nil else { return false }
+        // Already tracking (e.g. the user is just re-assigning the current session's To-Do
+        // task mid-session) — nothing to start, and starting again would reset the timer.
+        guard state == .stopped else { return true }
         guard start() else {
             selectedTaskID = nil
             return false
         }
 
         return true
+    }
+
+    @discardableResult
+    func selectTaskAndStart(_ task: TaskItem) -> Bool {
+        guard selectTask(task) else { return false }
+        return beginTrackingSelectedTask()
     }
 
     func selectSession(_ session: SessionItem) {
@@ -1127,6 +1540,14 @@ final class TimeCircleViewModel: ObservableObject {
         syncLiveActivityIfNeeded()
     }
 
+    func updateEditingTaskEmoji(_ emoji: String) {
+        guard let editingIndex else { return }
+
+        tasks[editingIndex].emoji = emoji
+        saveData()
+        syncLiveActivityIfNeeded()
+    }
+
     @discardableResult
     func start() -> Bool {
         guard let selectedTaskID, let selectedTask else { return false }
@@ -1205,7 +1626,8 @@ final class TimeCircleViewModel: ObservableObject {
         let clippedIntervals = clippedActiveIntervals(intervals, maxDuration: allowedDuration)
         let savedSessions = sessionItems(
             from: clippedIntervals,
-            task: selectedTask
+            task: selectedTask,
+            completedTasks: currentSessionCompletedTasks
         )
 
         if savedSessions.isEmpty, intervals.isEmpty, elapsed > 0 {
@@ -1216,7 +1638,8 @@ final class TimeCircleViewModel: ObservableObject {
                     startTime: startTime,
                     duration: max(elapsed, 1),
                     activityType: selectedTask.activityType,
-                    priority: selectedTask.priority
+                    priority: selectedTask.priority,
+                    completedTasks: currentSessionCompletedTasks
                 )
             )
         } else {
@@ -1241,7 +1664,8 @@ final class TimeCircleViewModel: ObservableObject {
             color: StoredColor(from: newTaskColor),
             description: trimmedDescription,
             activityType: newTaskType ?? .none,
-            priority: newTaskPriority
+            priority: newTaskPriority,
+            emoji: newTaskEmoji
         )
 
         tasks.insert(task, at: 0)
@@ -1254,6 +1678,7 @@ final class TimeCircleViewModel: ObservableObject {
         newTaskDescription = ""
         newTaskType = nil
         newTaskPriority = nil
+        newTaskEmoji = ""
         resetCurrentTracking()
         saveData()
         closeAddTaskSheet()
@@ -1313,6 +1738,9 @@ final class TimeCircleViewModel: ObservableObject {
         runningStartTime = nil
         elapsedBeforePause = 0
         completedActiveIntervals = []
+        currentSessionToDoItemID = nil
+        currentSessionCompletedTasks = []
+        unlinkedTrackingTask = nil
         TimeCircleStorage.clearActiveTrackingState()
         endLiveActivity()
     }
@@ -1504,7 +1932,7 @@ final class TimeCircleViewModel: ObservableObject {
             activeIntervalsForSaving(endingAt: now),
             maxDuration: allowedDuration
         )
-        let savedSessions = sessionItems(from: clippedIntervals, task: task)
+        let savedSessions = sessionItems(from: clippedIntervals, task: task, completedTasks: currentSessionCompletedTasks)
 
         if !savedSessions.isEmpty {
             sessions.append(contentsOf: savedSessions)
@@ -1564,7 +1992,8 @@ final class TimeCircleViewModel: ObservableObject {
 
     private func sessionItems(
         from intervals: [ActiveTrackingInterval],
-        task: TaskItem
+        task: TaskItem,
+        completedTasks: [CompletedTaskSnapshot] = []
     ) -> [SessionItem] {
         intervals.compactMap { interval in
             let duration = interval.end.timeIntervalSince(interval.start)
@@ -1576,7 +2005,8 @@ final class TimeCircleViewModel: ObservableObject {
                 startTime: interval.start,
                 duration: max(duration, 1),
                 activityType: task.activityType,
-                priority: task.priority
+                priority: task.priority,
+                completedTasks: completedTasks
             )
         }
     }
@@ -1692,6 +2122,10 @@ final class TimeCircleViewModel: ObservableObject {
     }
 
     private func ensureValidSelectedTask() {
+        // An unlinked ("Continue Without Selecting an Activity") session's task is deliberately
+        // never added to `tasks` — that's what keeps it out of every activity picker — so it
+        // must never be treated as "missing" just because it can't be found there.
+        guard unlinkedTrackingTask == nil else { return }
         guard let selectedTaskID else { return }
 
         if !tasks.contains(where: { $0.id == selectedTaskID }) {
@@ -1702,6 +2136,7 @@ final class TimeCircleViewModel: ObservableObject {
 
     private func ensureValidActiveTrackingState() {
         guard state != .stopped else { return }
+        guard unlinkedTrackingTask == nil else { return }
         guard let selectedTaskID,
               tasks.contains(where: { $0.id == selectedTaskID })
         else {
@@ -1755,30 +2190,87 @@ final class TimeCircleViewModel: ObservableObject {
         TimeCircleStorage.save(toDoItems: toDoItems)
     }
 
+    /// Backfills any missing occurrences for recurring tasks, from the day after each
+    /// series' latest known occurrence up through today. Runs at most once per calendar
+    /// day (cheap no-op otherwise), from `loadData`, `appDidBecomeActive`, and each
+    /// `updateCurrentTime` tick, so a recurring task's next occurrence appears the moment
+    /// its weekday arrives — even if the app was closed over one or more of them.
+    ///
+    /// Only the series' latest occurrence (by `day`) is read for its `recurringWeekdays` —
+    /// so editing an older occurrence's schedule never rewrites or affects history, and a
+    /// series stops generating the moment its latest occurrence's schedule is cleared.
+    private func generateDueRecurringToDoOccurrences() {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: now)
+
+        guard lastRecurringToDoGenerationDay != today else { return }
+        lastRecurringToDoGenerationDay = today
+
+        let seriesGroups = Dictionary(grouping: toDoItems.compactMap { item in
+            item.recurrenceGroupID.map { (groupID: $0, item: item) }
+        }, by: \.groupID)
+
+        var didGenerate = false
+
+        for (groupID, entries) in seriesGroups {
+            guard let latest = entries.map(\.item).max(by: { $0.day < $1.day }) else { continue }
+            guard !latest.recurringWeekdays.isEmpty else { continue }
+
+            var cursorDay = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: latest.day)) ?? today
+            while cursorDay <= today {
+                defer { cursorDay = calendar.date(byAdding: .day, value: 1, to: cursorDay) ?? today.addingTimeInterval(86_400) }
+
+                let weekday = calendar.component(.weekday, from: cursorDay)
+                guard latest.recurringWeekdays.contains(weekday) else { continue }
+
+                let alreadyExists = toDoItems.contains {
+                    $0.recurrenceGroupID == groupID && calendar.isDate($0.day, inSameDayAs: cursorDay)
+                }
+                guard !alreadyExists else { continue }
+
+                let nextSortOrder = (toDoItems
+                    .filter { calendar.isDate($0.day, inSameDayAs: cursorDay) }
+                    .map(\.sortOrder)
+                    .max() ?? -1) + 1
+
+                let occurrence = ToDoItem(
+                    title: latest.title,
+                    activityTaskID: latest.activityTaskID,
+                    activityType: latest.activityType,
+                    manualPriority: latest.manualPriority,
+                    day: cursorDay,
+                    sortOrder: nextSortOrder,
+                    subtasks: latest.subtasks.map { SubtaskItem(title: $0.title, sortOrder: $0.sortOrder) },
+                    recurringWeekdays: latest.recurringWeekdays,
+                    recurrenceGroupID: groupID,
+                    // The description is task-level and carries forward; notes are
+                    // day-specific, so each new occurrence starts with none.
+                    taskDescription: latest.taskDescription
+                )
+                toDoItems.append(occurrence)
+                didGenerate = true
+            }
+        }
+
+        if didGenerate {
+            saveToDoItems()
+        }
+    }
+
+    private func saveDismissedNoToDoTasksPromptTaskIDs() {
+        TimeCircleStorage.save(dismissedNoToDoTasksPromptTaskIDs: dismissedNoToDoTasksPromptTaskIDs)
+    }
+
     private func saveExpenses() {
         TimeCircleStorage.save(expenses: expenses)
     }
 
+    private func saveExpenseIntentionPreferences() {
+        TimeCircleStorage.save(expenseIntentionPreferences: expenseIntentionPreferences)
+    }
+
     private func saveTotalBudget() {
         TimeCircleStorage.save(totalBudget: totalBudget)
-    }
-
-    var totalSpent: Double {
-        expenses.reduce(0) { $0 + $1.amount }
-    }
-
-    var remainingBudget: Double {
-        totalBudget - totalSpent
-    }
-
-    var budgetProgress: Double {
-        guard totalBudget > 0 else { return 0 }
-        return min(max(totalSpent / totalBudget, 0), 1)
-    }
-
-    var percentOfBudgetUsed: Double {
-        guard totalBudget > 0 else { return 0 }
-        return max(totalSpent / totalBudget, 0) * 100
     }
 
     var expensesByDateDescending: [ExpenseItem] {
@@ -1795,13 +2287,42 @@ final class TimeCircleViewModel: ObservableObject {
         expensesForSelectedDay.reduce(0) { $0 + $1.amount }
     }
 
+    /// Recent expenses offered for Quick Fill, newest first and de-duplicated by title (keeping
+    /// each title's most recent occurrence) — this is meant to surface recurring expenses like
+    /// "Coffee" or "Taxi" once each, not repeat the same title many times over.
+    var recentExpensesForQuickFill: [ExpenseItem] {
+        var seenTitles = Set<String>()
+        var result: [ExpenseItem] = []
+
+        for expense in expenses.sorted(by: { $0.date > $1.date }) {
+            let key = expense.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !key.isEmpty, !seenTitles.contains(key) else { continue }
+            seenTitles.insert(key)
+            result.append(expense)
+            if result.count >= 8 { break }
+        }
+
+        return result
+    }
+
+    /// With nothing left in the available budget, any new expense would be entirely uncovered —
+    /// straight to Add Debt instead, so the user never fills out the same details twice only to
+    /// have `saveExpenseForm` redirect them there anyway after the fact.
     func openAddExpenseSheet() {
+        guard budgetForSelectedDay > 0 else {
+            openAddDebtSheet()
+            return
+        }
+
         editingExpenseID = nil
         newExpenseTitle = ""
         newExpenseMerchant = ""
         newExpenseAmountText = ""
-        newExpenseCategory = .other
+        newExpenseEmoji = ExpenseItem.defaultEmoji
         newExpenseDate = isViewingToday ? Date() : selectedDay
+        newExpenseNotes = ""
+        newExpenseIntention = ""
+        newExpenseIntentionDoNotShowAgain = false
         isShowingAddExpense = true
     }
 
@@ -1810,9 +2331,27 @@ final class TimeCircleViewModel: ObservableObject {
         newExpenseTitle = expense.title
         newExpenseMerchant = expense.merchant
         newExpenseAmountText = String(format: "%.2f", expense.amount)
-        newExpenseCategory = expense.category
+        newExpenseEmoji = expense.emoji
         newExpenseDate = expense.date
+        newExpenseNotes = expense.notes
+        newExpenseIntention = expense.intention
+        newExpenseIntentionDoNotShowAgain = expenseIntentionPreference(forTitle: expense.title)?.doNotShowAgain ?? false
         isShowingAddExpense = true
+    }
+
+    private func normalizedIntentionKey(_ title: String) -> String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    /// The remembered "do not show again" choice for a given expense title, if any — used to
+    /// decide whether the new-expense confirmation step should appear at all for this specific
+    /// title, keyed the same way Recent Expenses already dedupes by title.
+    func expenseIntentionPreference(forTitle title: String) -> IntentionPreference? {
+        expenseIntentionPreferences[normalizedIntentionKey(title)]
+    }
+
+    func debtIntentionPreference(forTitle title: String) -> IntentionPreference? {
+        debtIntentionPreferences[normalizedIntentionKey(title)]
     }
 
     func closeAddExpenseSheet() {
@@ -1820,38 +2359,129 @@ final class TimeCircleViewModel: ObservableObject {
         editingExpenseID = nil
     }
 
+    /// Fills the emoji, title, amount, and merchant from a recent expense — but never the date,
+    /// which always stays whatever the form's currently selected date already is.
+    func quickFillExpenseForm(from expense: ExpenseItem) {
+        newExpenseEmoji = expense.emoji
+        newExpenseTitle = expense.title
+        newExpenseMerchant = expense.merchant
+        newExpenseAmountText = String(format: "%.2f", expense.amount)
+    }
+
+    /// An expense can never push the available budget negative. The portion the budget can
+    /// actually cover is what gets stored as the expense; anything beyond that becomes a linked
+    /// automatic debt (see `DebtItem.linkedExpenseID`) for the uncovered remainder, left unpaid
+    /// and folded into the existing debt carry-forward/budget system unchanged from there on.
+    ///
+    /// Editing re-derives both numbers from scratch: the old expense and its old linked debt (if
+    /// any) are removed first, so `availableBudget(asOf:)` reflects what's available as if this
+    /// expense didn't exist yet — exactly what "how much of the new amount is covered" needs to
+    /// be measured against. This is what keeps the expense and its automatic debt synchronized
+    /// on every edit rather than drifting apart.
     func saveExpenseForm() {
         let trimmedTitle = newExpenseTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty, let amount = Double(newExpenseAmountText), amount > 0 else { return }
 
         let trimmedMerchant = newExpenseMerchant.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedEmoji = newExpenseEmoji.trimmingCharacters(in: .whitespacesAndNewlines)
+        let emoji = trimmedEmoji.isEmpty ? ExpenseItem.defaultEmoji : trimmedEmoji
+        let trimmedNotes = newExpenseNotes.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if let editingExpenseID, let index = expenses.firstIndex(where: { $0.id == editingExpenseID }) {
-            expenses[index].title = trimmedTitle
-            expenses[index].merchant = trimmedMerchant
-            expenses[index].amount = amount
-            expenses[index].category = newExpenseCategory
-            expenses[index].date = newExpenseDate
-        } else {
-            expenses.append(
-                ExpenseItem(
+        let isNewExpense = editingExpenseID == nil
+        let expenseID = editingExpenseID ?? UUID()
+
+        if let editingExpenseID {
+            expenses.removeAll { $0.id == editingExpenseID }
+            debts.removeAll { $0.linkedExpenseID == editingExpenseID }
+        }
+
+        let budgetBeforeThisExpense = max(availableBudget(asOf: newExpenseDate), 0)
+
+        // A brand-new expense when there's nothing left to cover isn't a partial-coverage case —
+        // there's no expense to record at all. Redirect the whole entry over to Add Debt instead.
+        if isNewExpense && budgetBeforeThisExpense <= 0 {
+            redirectExpenseFormToDebt(title: trimmedTitle, amountText: newExpenseAmountText, date: newExpenseDate, notes: trimmedNotes)
+            return
+        }
+
+        let coveredAmount = min(amount, budgetBeforeThisExpense)
+        let uncoveredAmount = amount - coveredAmount
+
+        // The Edit Expense screen exposes the same intention/"do not show again" fields the new-
+        // expense confirmation step writes, so both paths read from (and update) the exact same
+        // published fields and the same preference dictionary — editing these here changes what
+        // the confirmation step does the next time this title comes up, with no separate storage.
+        let trimmedIntention = newExpenseIntention.trimmingCharacters(in: .whitespacesAndNewlines)
+        expenseIntentionPreferences[normalizedIntentionKey(trimmedTitle)] = IntentionPreference(
+            intention: trimmedIntention,
+            doNotShowAgain: newExpenseIntentionDoNotShowAgain
+        )
+        saveExpenseIntentionPreferences()
+
+        expenses.append(
+            ExpenseItem(
+                id: expenseID,
+                title: trimmedTitle,
+                merchant: trimmedMerchant,
+                amount: coveredAmount,
+                emoji: emoji,
+                date: newExpenseDate,
+                notes: trimmedNotes,
+                intention: trimmedIntention
+            )
+        )
+
+        if uncoveredAmount > 0 {
+            debts.append(
+                DebtItem(
                     title: trimmedTitle,
+                    amount: uncoveredAmount,
+                    debtDate: newExpenseDate,
+                    recordedDate: Date(),
+                    notes: trimmedNotes,
+                    emoji: emoji,
                     merchant: trimmedMerchant,
-                    amount: amount,
-                    category: newExpenseCategory,
-                    date: newExpenseDate
+                    linkedExpenseID: expenseID
                 )
             )
         }
 
         saveExpenses()
+        saveDebts()
         isShowingAddExpense = false
         editingExpenseID = nil
     }
 
+    /// Closes Add Expense and opens Add Debt pre-filled with what was just typed, for the "budget
+    /// is already 0" case where no expense can be recorded at all.
+    private func redirectExpenseFormToDebt(title: String, amountText: String, date: Date, notes: String) {
+        isShowingAddExpense = false
+        editingExpenseID = nil
+
+        editingDebtID = nil
+        newDebtTitle = title
+        newDebtAmountText = amountText
+        newDebtDate = date
+        newDebtNotes = notes
+        newDebtIntention = ""
+        newDebtIntentionDoNotShowAgain = false
+        newDebtIsDateReminderEnabled = false
+        newDebtScheduledDate = Date()
+        newDebtIsTimeReminderEnabled = false
+        newDebtScheduledTime = Date()
+        refreshNotificationPermissionStatus()
+        isShowingAddDebt = true
+    }
+
+    /// Removing the expense record is what restores its covered amount to the budget —
+    /// `availableBudget(asOf:)` reads `expenses` live, so there's no separate reversal step. The
+    /// linked automatic debt (if any) is removed alongside it via `linkedExpenseID`, which can
+    /// only ever match a debt this same expense created — never an unrelated manual one.
     func deleteExpense(id: UUID) {
         expenses.removeAll { $0.id == id }
+        debts.removeAll { $0.linkedExpenseID == id }
         saveExpenses()
+        saveDebts()
         isShowingAddExpense = false
         editingExpenseID = nil
     }
@@ -1860,20 +2490,575 @@ final class TimeCircleViewModel: ObservableObject {
         isShowingEditBudget = true
     }
 
-    func updateTotalBudget(_ newValue: Double) {
-        guard newValue > 0 else { return }
-
-        totalBudget = newValue
-        saveTotalBudget()
+    enum BudgetEditScope {
+        /// Updates the selected day's budget; it naturally carries forward to every later day
+        /// exactly as any budget change already does. Days before the selected day keep
+        /// whichever budget they already had.
+        case today
+        /// Updates the selected day *and* every day before it, by resetting the root baseline
+        /// itself. Later days are unaffected beyond what "today" already changes for them — they
+        /// keep carrying forward from the new value the same way they already do.
+        case pastAndToday
     }
 
-    func openAddToDoItemSheet() {
+    /// `newValue` is the intended *available* budget for the day being viewed — the same figure
+    /// the Money screen shows and Edit Budget was prefilled with — not the internal baseline.
+    ///
+    /// - `.today` solves backward for a new baseline value (prevents previously-recorded
+    ///   expenses/paid debts from compounding into an unexpectedly low or negative result) and
+    ///   records it as a `BudgetBaselineChange` effective from `selectedDay` onward — days before
+    ///   it keep using whichever baseline already applied to them.
+    /// - `.pastAndToday` does the same backward-solve, but instead clears every baseline change
+    ///   on or before `selectedDay` and resets the root `totalBudget` itself. Since the root
+    ///   baseline is what every day falls back to in the absence of a more specific change, this
+    ///   cascades the same adjustment through every earlier day too — each still computed with
+    ///   its own day's expenses/top-ups/paid debts, not flattened to one identical number. Any
+    ///   baseline change already scheduled for *after* `selectedDay` is left untouched, so later
+    ///   days keep carrying forward exactly as they already do.
+    func updateTotalBudget(_ newValue: Double, scope: BudgetEditScope) {
+        guard newValue >= 0 else { return }
+
+        let newBaselineValue = newValue - derivedBudgetDelta(asOf: selectedDay)
+
+        switch scope {
+        case .today:
+            budgetBaselineChanges.removeAll { Calendar.current.isDate($0.effectiveDate, inSameDayAs: selectedDay) }
+            budgetBaselineChanges.append(BudgetBaselineChange(effectiveDate: selectedDay, value: newBaselineValue))
+        case .pastAndToday:
+            let dayStart = Calendar.current.startOfDay(for: selectedDay)
+            budgetBaselineChanges.removeAll { Calendar.current.startOfDay(for: $0.effectiveDate) <= dayStart }
+            totalBudget = newBaselineValue
+            saveTotalBudget()
+        }
+
+        saveBudgetBaselineChanges()
+    }
+
+    private func saveBudgetBaselineChanges() {
+        TimeCircleStorage.save(budgetBaselineChanges: budgetBaselineChanges)
+    }
+
+    private func saveDebts() {
+        TimeCircleStorage.save(debts: debts)
+    }
+
+    private func saveDebtIntentionPreferences() {
+        TimeCircleStorage.save(debtIntentionPreferences: debtIntentionPreferences)
+    }
+
+    /// A debt's visibility on a given day depends on where that day falls relative to its
+    /// `debtDate` and (once paid) its `paidDate` — see `DebtItem`'s own doc comment for the
+    /// exact rule. `recordedDate` plays no part here; it's informational only.
+    private enum DebtDayStatus {
+        case notYetCreated
+        case pending
+        case paid
+        case hidden
+    }
+
+    /// An unpaid debt belongs to its `debtDate` and carries forward to every day after — still
+    /// owed, still pending. Once marked paid, it stays visible as paid for every day from
+    /// `debtDate` through `paidDate` inclusive (a fixed historical window), then disappears on
+    /// every later day. Unpaying it again drops that window and resumes carry-forward from
+    /// `debtDate` exactly as if it had never been paid.
+    private func debtStatus(_ debt: DebtItem, on day: Date) -> DebtDayStatus {
+        let calendar = Calendar.current
+        let dayStart = calendar.startOfDay(for: day)
+        let debtStart = calendar.startOfDay(for: debt.debtDate)
+
+        guard dayStart >= debtStart else { return .notYetCreated }
+
+        guard let paidDate = debt.paidDate else { return .pending }
+
+        let paidStart = calendar.startOfDay(for: paidDate)
+        return dayStart <= paidStart ? .paid : .hidden
+    }
+
+    var pendingDebtsForSelectedDay: [DebtItem] {
+        debts
+            .filter { debtStatus($0, on: selectedDay) == .pending }
+            .sorted { $0.debtDate < $1.debtDate }
+    }
+
+    var paidDebtsForSelectedDay: [DebtItem] {
+        debts
+            .filter { debtStatus($0, on: selectedDay) == .paid }
+            .sorted { $0.debtDate < $1.debtDate }
+    }
+
+    /// Not simply the pending list's total: a debt already shown as paid in history can still
+    /// have been "still owed" as of `selectedDay` if that day falls before its `paidDate` — the
+    /// header needs the amount that was actually outstanding on that day, independent of whether
+    /// the row currently renders as pending or paid.
+    private func isStillOwed(_ debt: DebtItem, asOf day: Date) -> Bool {
+        let calendar = Calendar.current
+        let dayStart = calendar.startOfDay(for: day)
+        let debtStart = calendar.startOfDay(for: debt.debtDate)
+
+        guard dayStart >= debtStart else { return false }
+        guard let paidDate = debt.paidDate else { return true }
+
+        return calendar.startOfDay(for: paidDate) > dayStart
+    }
+
+    var totalOwedForSelectedDay: Double {
+        debts
+            .filter { isStillOwed($0, asOf: selectedDay) }
+            .reduce(0) { $0 + $1.amount }
+    }
+
+    private func isDateOnOrBefore(_ date: Date, _ day: Date) -> Bool {
+        Calendar.current.startOfDay(for: date) <= Calendar.current.startOfDay(for: day)
+    }
+
+    /// Net effect of every Add Money top-up, expense, and paid debt that had happened by the end
+    /// of `day`, relative to `totalBudget`. Pulled out of `availableBudget(asOf:)` so
+    /// `updateTotalBudget(_:)` can solve for the baseline that makes a given day's available
+    /// budget come out to an exact target value, instead of the two ever disagreeing.
+    private func derivedBudgetDelta(asOf day: Date) -> Double {
+        let topUpsTotal = moneyTopUps
+            .filter { isDateOnOrBefore($0.date, day) }
+            .reduce(0) { $0 + $1.amount }
+
+        let expensesTotal = expenses
+            .filter { isDateOnOrBefore($0.date, day) }
+            .reduce(0) { $0 + $1.amount }
+
+        // Reading straight off the live `debts` array (not a separately-tracked deduction) means
+        // a paid debt that's later deleted or unpaid stops counting immediately and automatically
+        // — there's no separate "restore the budget" step to forget to run.
+        let paidDebtsTotal = debts.reduce(0.0) { partial, debt in
+            guard debt.isPaid, let paidDate = debt.paidDate, isDateOnOrBefore(paidDate, day) else {
+                return partial
+            }
+            return partial + debt.amount
+        }
+
+        return topUpsTotal - expensesTotal - paidDebtsTotal
+    }
+
+    /// The Money system's own start date — there's no budget history before this day, since
+    /// nothing was being tracked yet. This is a display-only floor: it affects nothing about how
+    /// expenses, debts, or top-ups are stored, only what `availableBudget(asOf:)` reports for a
+    /// day that falls before it.
+    ///
+    /// Derived from the data itself — the earliest date among every top-up, expense, and debt —
+    /// rather than a fixed date, since the Money feature's actual start is whenever its first
+    /// real record was dated, not a date baked into the code. If there's no dated record at all
+    /// yet (a completely fresh install), there's no history to speak of, so today is the floor.
+    private var firstMoneyDay: Date {
+        let calendar = Calendar.current
+        var earliest: Date?
+
+        for date in moneyTopUps.map(\.date) + expenses.map(\.date) + debts.map(\.debtDate) {
+            if earliest == nil || date < earliest! {
+                earliest = date
+            }
+        }
+
+        return calendar.startOfDay(for: earliest ?? now)
+    }
+
+    /// The baseline in effect for `day`: whichever `BudgetBaselineChange` has the latest
+    /// `effectiveDate` on or before `day`, or the original default `totalBudget` if none applies
+    /// yet. This is what makes "Apply to Today and All Future Days" shift the budget forward
+    /// from that day on without touching how earlier days are computed.
+    private func baseline(asOf day: Date) -> Double {
+        let calendar = Calendar.current
+        let dayStart = calendar.startOfDay(for: day)
+
+        let applicable = budgetBaselineChanges
+            .filter { calendar.startOfDay(for: $0.effectiveDate) <= dayStart }
+            .max { $0.effectiveDate < $1.effectiveDate }
+
+        return applicable?.value ?? totalBudget
+    }
+
+    /// The single source of truth for "available budget as of `day`". Every place that shows or
+    /// edits the budget (the Money screen's figure and the Edit Budget screen alike) must go
+    /// through this same calculation, so they can never disagree. It's recomputed fresh from
+    /// source records each time rather than kept as a single mutated running total, so a past
+    /// day's value is a stable historical fact that today's activity can't retroactively change.
+    ///
+    /// Days before `firstMoneyDay` always report 0 — budget history simply doesn't exist yet
+    /// that far back, so nothing is reconstructed or carried backwards for them.
+    func availableBudget(asOf day: Date) -> Double {
+        guard Calendar.current.startOfDay(for: day) >= firstMoneyDay else {
+            return 0
+        }
+
+        return baseline(asOf: day) + derivedBudgetDelta(asOf: day)
+    }
+
+    var budgetForSelectedDay: Double {
+        availableBudget(asOf: selectedDay)
+    }
+
+    /// Marking a debt paid is only actionable while viewing today — same convention as pending
+    /// To-Do items: past and future days show what was/would be true, but you only ever act on
+    /// "now". Unchecking a paid debt, though, can't use that same guard: a paid debt is only
+    /// ever displayed on its creation date (it doesn't carry forward once paid), so if creation
+    /// date isn't today, requiring `isViewingToday` would make the row impossible to interact
+    /// with wherever it's actually shown. Uncheck is gated on viewing that creation date instead
+    /// — the one day the row exists to be tapped.
+    /// Actionable from any day the debt is actually shown for `selectedDay` — pending debts are
+    /// visible from creation date onward for as long as they're unpaid, and a paid debt only on
+    /// its creation date, so gating on `debtStatus` (rather than a fixed "today" or "creation
+    /// date" check) covers both without requiring navigation back to a specific day first.
+    func toggleDebtPaid(_ id: UUID) {
+        guard let index = debts.firstIndex(where: { $0.id == id }) else { return }
+
+        switch debtStatus(debts[index], on: selectedDay) {
+        case .pending:
+            debts[index].isPaid = true
+            debts[index].paidDate = isViewingToday ? Date() : selectedDay
+            DebtReminderManager.cancelReminder(for: debts[index].id)
+        case .paid:
+            debts[index].isPaid = false
+            debts[index].paidDate = nil
+            // Re-schedules only if a reminder date/time is actually set and still in the
+            // future — `scheduleReminder` itself is a no-op otherwise.
+            DebtReminderManager.scheduleReminder(for: debts[index])
+        case .notYetCreated, .hidden:
+            return
+        }
+
+        saveDebts()
+    }
+
+    func openAddDebtSheet() {
+        editingDebtID = nil
+        newDebtTitle = ""
+        newDebtAmountText = ""
+        newDebtDate = isViewingToday ? Date() : selectedDay
+        newDebtNotes = ""
+        newDebtIntention = ""
+        newDebtIntentionDoNotShowAgain = false
+        newDebtIsDateReminderEnabled = false
+        newDebtScheduledDate = Date()
+        newDebtIsTimeReminderEnabled = false
+        newDebtScheduledTime = Date()
+        refreshNotificationPermissionStatus()
+        isShowingAddDebt = true
+    }
+
+    func openEditDebtSheet(_ debt: DebtItem) {
+        editingDebtID = debt.id
+        newDebtTitle = debt.title
+        newDebtAmountText = String(format: "%.2f", debt.amount)
+        newDebtDate = debt.debtDate
+        newDebtNotes = debt.notes
+        newDebtIntention = debt.intention
+        newDebtIntentionDoNotShowAgain = debtIntentionPreference(forTitle: debt.title)?.doNotShowAgain ?? false
+        newDebtIsDateReminderEnabled = debt.scheduledPaymentDate != nil
+        newDebtScheduledDate = debt.scheduledPaymentDate ?? debt.debtDate
+        newDebtIsTimeReminderEnabled = debt.scheduledPaymentTime != nil
+        newDebtScheduledTime = debt.scheduledPaymentTime ?? Date()
+        refreshNotificationPermissionStatus()
+        isShowingAddDebt = true
+    }
+
+    /// Called when the Date toggle changes. Turning it on seeds the reminder date from the
+    /// debt date currently in the form and requests notification permission if not yet asked;
+    /// turning it off also turns Time off, since Time can't be enabled without Date.
+    func handleDateReminderToggle(_ isOn: Bool) {
+        if isOn {
+            newDebtScheduledDate = newDebtDate
+            requestNotificationPermissionIfNeeded()
+        } else {
+            newDebtIsTimeReminderEnabled = false
+        }
+    }
+
+    /// Called when the Time toggle changes. A no-op if Date isn't enabled — the UI disables
+    /// this control in that case, but this guards the model too.
+    func handleTimeReminderToggle(_ isOn: Bool) {
+        guard newDebtIsDateReminderEnabled else {
+            newDebtIsTimeReminderEnabled = false
+            return
+        }
+
+        if isOn {
+            newDebtScheduledTime = Date()
+            requestNotificationPermissionIfNeeded()
+        }
+    }
+
+    private func requestNotificationPermissionIfNeeded() {
+        DebtReminderManager.requestAuthorizationIfNeeded { [weak self] granted in
+            self?.isNotificationPermissionDenied = !granted
+        }
+    }
+
+    private func refreshNotificationPermissionStatus() {
+        DebtReminderManager.isAuthorizationDenied { [weak self] isDenied in
+            self?.isNotificationPermissionDenied = isDenied
+        }
+    }
+
+    /// Read live off `debts` (rather than copied into a separate form field like the other
+    /// editable fields) so the Add/Edit Debt screen reflects the paid date immediately after a
+    /// paid/unpaid toggle, since that's set automatically and never directly editable here.
+    var editingDebtPaidDate: Date? {
+        guard let editingDebtID, let debt = debts.first(where: { $0.id == editingDebtID }) else {
+            return nil
+        }
+        return debt.paidDate
+    }
+
+    /// `recordedDate` is fixed at creation and never editable, so — like `editingDebtPaidDate` —
+    /// this is read live off `debts` rather than copied into a form field.
+    var editingDebtRecordedDate: Date? {
+        guard let editingDebtID, let debt = debts.first(where: { $0.id == editingDebtID }) else {
+            return nil
+        }
+        return debt.recordedDate
+    }
+
+    func closeAddDebtSheet() {
+        isShowingAddDebt = false
+        editingDebtID = nil
+    }
+
+    func saveDebtForm() {
+        let trimmedTitle = newDebtTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty, let amount = Double(newDebtAmountText), amount > 0 else { return }
+
+        let trimmedNotes = newDebtNotes.trimmingCharacters(in: .whitespacesAndNewlines)
+        let scheduledDate: Date? = newDebtIsDateReminderEnabled ? newDebtScheduledDate : nil
+        let scheduledTime: Date? = (newDebtIsDateReminderEnabled && newDebtIsTimeReminderEnabled) ? newDebtScheduledTime : nil
+
+        // The Add/Edit Debt screen exposes the same intention/"do not show again" fields the
+        // new-debt confirmation step writes, so both paths read from (and update) the exact same
+        // published fields and the same preference dictionary — editing these here changes what
+        // the confirmation step does the next time this title comes up, with no separate storage.
+        let trimmedIntention = newDebtIntention.trimmingCharacters(in: .whitespacesAndNewlines)
+        debtIntentionPreferences[normalizedIntentionKey(trimmedTitle)] = IntentionPreference(
+            intention: trimmedIntention,
+            doNotShowAgain: newDebtIntentionDoNotShowAgain
+        )
+        saveDebtIntentionPreferences()
+
+        let savedDebt: DebtItem
+        if let editingDebtID, let index = debts.firstIndex(where: { $0.id == editingDebtID }) {
+            debts[index].title = trimmedTitle
+            debts[index].amount = amount
+            debts[index].debtDate = newDebtDate
+            debts[index].notes = trimmedNotes
+            debts[index].scheduledPaymentDate = scheduledDate
+            debts[index].scheduledPaymentTime = scheduledTime
+            debts[index].intention = trimmedIntention
+            savedDebt = debts[index]
+        } else {
+            let newDebt = DebtItem(
+                title: trimmedTitle,
+                amount: amount,
+                debtDate: newDebtDate,
+                recordedDate: Date(),
+                notes: trimmedNotes,
+                scheduledPaymentDate: scheduledDate,
+                scheduledPaymentTime: scheduledTime,
+                intention: trimmedIntention
+            )
+            debts.append(newDebt)
+            savedDebt = newDebt
+        }
+
+        saveDebts()
+        // Cancels whatever was previously scheduled and schedules fresh — covers both a new
+        // reminder and any date/time change on an existing one.
+        DebtReminderManager.scheduleReminder(for: savedDebt)
+        isShowingAddDebt = false
+        editingDebtID = nil
+    }
+
+    func deleteDebt(id: UUID) {
+        DebtReminderManager.cancelReminder(for: id)
+        debts.removeAll { $0.id == id }
+        saveDebts()
+        isShowingAddDebt = false
+        editingDebtID = nil
+    }
+
+    func openAddMoneySheet() {
+        newMoneyAmountText = ""
+        newMoneyDate = isViewingToday ? Date() : selectedDay
+        isShowingAddMoney = true
+    }
+
+    func closeAddMoneySheet() {
+        isShowingAddMoney = false
+    }
+
+    private func saveMoneyTopUps() {
+        TimeCircleStorage.save(moneyTopUps: moneyTopUps)
+    }
+
+    func saveMoneyForm() {
+        guard let amount = Double(newMoneyAmountText), amount > 0 else { return }
+
+        // The top-up belongs to whatever date is selected here — `availableBudget(asOf:)`
+        // already filters top-ups to those on or before the day being viewed, so a top-up
+        // dated in the future never affects earlier days, and moving its date (or removing it
+        // entirely) is picked up automatically since nothing is precomputed per day.
+        moneyTopUps.append(MoneyTopUp(amount: amount, date: newMoneyDate))
+        saveMoneyTopUps()
+        isShowingAddMoney = false
+    }
+
+    /// Only the top-ups dated on the day currently selected on the Money page — the History
+    /// section on the Add Money screen shows what happened for that specific day, not every
+    /// top-up ever recorded.
+    var moneyTopUpsForSelectedDay: [MoneyTopUp] {
+        moneyTopUps
+            .filter { Calendar.current.isDate($0.date, inSameDayAs: selectedDay) }
+            .sorted { $0.date > $1.date }
+    }
+
+    /// Removing the record itself is what removes its effect — `availableBudget(asOf:)` reads
+    /// `moneyTopUps` live, so there's nothing else to reverse or recompute.
+    func deleteMoneyTopUp(id: UUID) {
+        moneyTopUps.removeAll { $0.id == id }
+        saveMoneyTopUps()
+    }
+
+    func openAddToDoItemSheet(
+        presetActivityTaskID: UUID? = nil,
+        presetActivityType: ActivityType? = nil,
+        presetPriority: ActivityPriority? = nil
+    ) {
         editingToDoItemID = nil
         newToDoItemTitle = ""
-        newToDoItemActivityTaskID = nil
-        newToDoItemActivityType = nil
-        newToDoItemPriority = nil
+        newToDoItemActivityTaskID = presetActivityTaskID
+        newToDoItemActivityType = presetActivityType
+        newToDoItemPriority = presetPriority
+        newToDoItemSubtasks = []
+        newToDoItemRecurringWeekdays = []
+        newToDoItemDescription = ""
+        newToDoItemNotes = ""
         isShowingAddToDoItem = true
+    }
+
+    enum PostSelectionToDoGate {
+        /// The source has its own To-Do tasks — tracking must wait for `selectToDoItemForTracking`
+        /// or `cancelToDoItemSelection` to resolve the pick.
+        case needsToDoSelection
+        /// The source has no To-Do tasks yet — tracking must wait for the "no tasks yet"
+        /// dialog to resolve via `dismissNoToDoTasksPrompt` (Not Now) or a task getting created.
+        case needsNoTasksDecision
+        /// No further input required — the caller should call `beginTrackingSelectedTask()` now.
+        case readyToStart
+    }
+
+    /// Shared by `evaluatePostSelectionToDoGate` (a specific activity) and
+    /// `evaluateGeneralPostSelectionToDoGate` ("Continue Without Selecting an Activity") — both
+    /// just resolve to a `ToDoSelectionSource` and share every bit of this decision logic.
+    /// The "already opted out, start immediately" shortcut only ever applies to a specific
+    /// activity — there's nothing to remember an opt-out against for a bare type/priority.
+    private func evaluateToDoGate(for source: ToDoSelectionSource) -> PostSelectionToDoGate {
+        currentSessionToDoItemID = nil
+
+        guard !toDoItems(for: source).isEmpty else {
+            if case .activity(let taskID) = source, dismissedNoToDoTasksPromptTaskIDs.contains(taskID) {
+                return .readyToStart
+            }
+
+            noToDoTasksPromptSource = source
+            isShowingNoToDoTasksPrompt = true
+            return .needsNoTasksDecision
+        }
+
+        toDoItemSelectionSource = source
+        isSelectingToDoItemForTracking = true
+        return .needsToDoSelection
+    }
+
+    /// Called right after a task has been selected (via `selectTask`), before tracking begins.
+    /// Determines whether the user still needs to make a decision — pick one of the activity's
+    /// own To-Do tasks, or respond to the "no tasks yet" prompt — or whether tracking can start
+    /// immediately (already opted out of that prompt for this activity).
+    func evaluatePostSelectionToDoGate(for task: TaskItem) -> PostSelectionToDoGate {
+        evaluateToDoGate(for: .activity(task.id))
+    }
+
+    /// The "Continue Without Selecting an Activity" equivalent — sources the same gate/screen
+    /// from the "General" tasks for a bare type/priority instead of a specific activity's tasks.
+    func evaluateGeneralPostSelectionToDoGate(type: ActivityType, priority: ActivityPriority?) -> PostSelectionToDoGate {
+        evaluateToDoGate(for: .general(type: type, priority: priority))
+    }
+
+    @discardableResult
+    func selectToDoItemForTracking(_ item: ToDoItem) -> Bool {
+        currentSessionToDoItemID = item.id
+        isSelectingToDoItemForTracking = false
+        toDoItemSelectionSource = nil
+        return beginTrackingSelectedTask()
+    }
+
+    @discardableResult
+    func cancelToDoItemSelection() -> Bool {
+        currentSessionToDoItemID = nil
+        isSelectingToDoItemForTracking = false
+        toDoItemSelectionSource = nil
+        return beginTrackingSelectedTask()
+    }
+
+    /// Lets the user revisit the To-Do task for an activity that's already being tracked —
+    /// tapping the Task row mid-session. Reuses the same selection screen as the pre-tracking
+    /// flow; `selectToDoItemForTracking`/`cancelToDoItemSelection` both no-op on the timer via
+    /// `beginTrackingSelectedTask()`'s `state == .stopped` guard, so the running session is
+    /// left untouched either way.
+    func beginManagingCurrentSessionToDoItem() {
+        guard let selectedTask, state != .stopped else { return }
+
+        if unlinkedTrackingTask != nil {
+            toDoItemSelectionSource = .general(type: selectedTask.activityType, priority: selectedTask.priority)
+        } else {
+            toDoItemSelectionSource = .activity(selectedTask.id)
+        }
+        isSelectingToDoItemForTracking = true
+    }
+
+    /// Resolves the "no tasks yet" dialog. Does not itself start tracking — the caller decides
+    /// when (immediately for "Not Now", or after a newly created task is saved for "Create a
+    /// Task", via `isCreatingToDoItemToStartTracking`).
+    @discardableResult
+    func dismissNoToDoTasksPrompt(dontShowAgain: Bool) -> ToDoSelectionSource? {
+        if dontShowAgain, case .activity(let taskID) = noToDoTasksPromptSource {
+            dismissedNoToDoTasksPromptTaskIDs.insert(taskID)
+            saveDismissedNoToDoTasksPromptTaskIDs()
+        }
+
+        let source = noToDoTasksPromptSource
+        isShowingNoToDoTasksPrompt = false
+        noToDoTasksPromptSource = nil
+        return source
+    }
+
+    /// Called after completing a To-Do task from the mid-session "manage current task" picker
+    /// (`toDoItemSelectionContent`). If that was the source's last remaining task, exits the
+    /// picker immediately (rather than leaving the user on an empty list) and surfaces the
+    /// "no remaining tasks" prompt in its place.
+    func handleToDoItemCompletedDuringTracking(for source: ToDoSelectionSource) {
+        guard isSelectingToDoItemForTracking, toDoItemSelectionSource == source else { return }
+        guard toDoItems(for: source).isEmpty else { return }
+
+        currentSessionToDoItemID = nil
+        isSelectingToDoItemForTracking = false
+        toDoItemSelectionSource = nil
+        noRemainingTasksPromptSource = source
+        isShowingNoRemainingTasksPrompt = true
+    }
+
+    /// Resolves the "no remaining tasks" dialog. Like `dismissNoToDoTasksPrompt`, doesn't itself
+    /// start tracking — `beginTrackingSelectedTask()`'s `state == .stopped` guard makes it a
+    /// no-op when a session is already running, so this is safe to call from both contexts.
+    @discardableResult
+    func dismissNoRemainingTasksPrompt() -> ToDoSelectionSource? {
+        let source = noRemainingTasksPromptSource
+        isShowingNoRemainingTasksPrompt = false
+        noRemainingTasksPromptSource = nil
+        return source
     }
 
     func openEditToDoItemSheet(_ item: ToDoItem) {
@@ -1882,25 +3067,92 @@ final class TimeCircleViewModel: ObservableObject {
         newToDoItemActivityTaskID = item.activityTaskID
         newToDoItemActivityType = item.activityType
         newToDoItemPriority = item.manualPriority
+        newToDoItemSubtasks = item.subtasks
+        newToDoItemRecurringWeekdays = item.recurringWeekdays
+        newToDoItemDescription = item.taskDescription
+        newToDoItemNotes = item.notes
         isShowingAddToDoItem = true
+    }
+
+    func toggleNewToDoRecurringWeekday(_ weekday: Int) {
+        if newToDoItemRecurringWeekdays.contains(weekday) {
+            newToDoItemRecurringWeekdays.remove(weekday)
+        } else {
+            newToDoItemRecurringWeekdays.insert(weekday)
+        }
+    }
+
+    func toggleNewToDoRecurringAllWeekdays() {
+        newToDoItemRecurringWeekdays = newToDoItemRecurringWeekdays.count == 7 ? [] : Set(1...7)
+    }
+
+    func addNewToDoSubtask() {
+        newToDoItemSubtasks.append(SubtaskItem(title: ""))
+    }
+
+    func removeNewToDoSubtask(id: UUID) {
+        newToDoItemSubtasks.removeAll { $0.id == id }
+    }
+
+    func moveNewToDoSubtask(id: UUID, offset: Int) {
+        guard let index = newToDoItemSubtasks.firstIndex(where: { $0.id == id }) else { return }
+        let newIndex = index + offset
+        guard newToDoItemSubtasks.indices.contains(newIndex) else { return }
+        newToDoItemSubtasks.swapAt(index, newIndex)
     }
 
     func closeAddToDoItemSheet() {
         isShowingAddToDoItem = false
         editingToDoItemID = nil
+        isCreatingToDoItemToStartTracking = false
     }
 
     func saveToDoItemForm() {
         let trimmedTitle = newToDoItemTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else { return }
+        // Every task must belong to Pain/Pleasure/Other — either a specific activity or a
+        // bare type — so there's no longer a way to save one unassigned into its own section.
+        guard newToDoItemActivityTaskID != nil || newToDoItemActivityType != nil else { return }
 
         let resolvedPriority = newToDoItemActivityType?.hasPriorityTiers == true ? (newToDoItemPriority ?? .medium) : nil
+
+        let resolvedSubtasks: [SubtaskItem] = newToDoItemSubtasks.enumerated().compactMap { index, subtask in
+            let trimmed = subtask.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            var resolved = subtask
+            resolved.title = trimmed
+            resolved.sortOrder = index
+            return resolved
+        }
+
+        let resolvedDescription = newToDoItemDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedNotes = newToDoItemNotes.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var createdItemID: UUID?
 
         if let editingToDoItemID, let index = toDoItems.firstIndex(where: { $0.id == editingToDoItemID }) {
             toDoItems[index].title = trimmedTitle
             toDoItems[index].activityTaskID = newToDoItemActivityTaskID
             toDoItems[index].activityType = newToDoItemActivityType
             toDoItems[index].manualPriority = newToDoItemActivityTaskID == nil ? resolvedPriority : nil
+            toDoItems[index].subtasks = resolvedSubtasks
+            // Only this occurrence's own schedule changes — history is untouched, and since
+            // `generateDueRecurringToDoOccurrences` only reads a series' latest occurrence,
+            // this takes effect for future occurrences without rewriting past ones.
+            toDoItems[index].recurringWeekdays = newToDoItemRecurringWeekdays
+            if !newToDoItemRecurringWeekdays.isEmpty && toDoItems[index].recurrenceGroupID == nil {
+                toDoItems[index].recurrenceGroupID = UUID()
+            }
+            // Notes are day-specific — only this occurrence's own record changes.
+            toDoItems[index].notes = resolvedNotes
+            // The description is task-level, so it's mirrored onto every other occurrence
+            // sharing this recurrence series (if any).
+            toDoItems[index].taskDescription = resolvedDescription
+            if let groupID = toDoItems[index].recurrenceGroupID {
+                for otherIndex in toDoItems.indices where toDoItems[otherIndex].recurrenceGroupID == groupID {
+                    toDoItems[otherIndex].taskDescription = resolvedDescription
+                }
+            }
         } else {
             let nextSortOrder = (toDoItems
                 .filter { Calendar.current.isDate($0.day, inSameDayAs: selectedDay) }
@@ -1913,14 +3165,31 @@ final class TimeCircleViewModel: ObservableObject {
                 activityType: newToDoItemActivityType,
                 manualPriority: newToDoItemActivityTaskID == nil ? resolvedPriority : nil,
                 day: selectedDay,
-                sortOrder: nextSortOrder
+                sortOrder: nextSortOrder,
+                subtasks: resolvedSubtasks,
+                recurringWeekdays: newToDoItemRecurringWeekdays,
+                recurrenceGroupID: newToDoItemRecurringWeekdays.isEmpty ? nil : UUID(),
+                taskDescription: resolvedDescription,
+                notes: resolvedNotes
             )
             toDoItems.append(item)
+            createdItemID = item.id
         }
 
         saveToDoItems()
         isShowingAddToDoItem = false
         editingToDoItemID = nil
+
+        // If this task was created from the Tracking screen's "no tasks yet" prompt, the
+        // tracking session was deliberately held back until now — begin it with the task just
+        // created, so the user never had to make an extra selection.
+        if isCreatingToDoItemToStartTracking {
+            isCreatingToDoItemToStartTracking = false
+            if let createdItemID {
+                currentSessionToDoItemID = createdItemID
+            }
+            beginTrackingSelectedTask()
+        }
     }
 
     func deleteToDoItem(id: UUID) {
@@ -1932,7 +3201,12 @@ final class TimeCircleViewModel: ObservableObject {
 
     func completeToDoItem(_ item: ToDoItem) {
         guard let index = toDoItems.firstIndex(where: { $0.id == item.id }) else { return }
+        guard !toDoItems[index].isCompleted else { return }
+
         toDoItems[index].isCompleted = true
+        if state != .stopped {
+            currentSessionCompletedTasks.append(CompletedTaskSnapshot(title: toDoItems[index].title))
+        }
         saveToDoItems()
     }
 
@@ -1940,6 +3214,37 @@ final class TimeCircleViewModel: ObservableObject {
         guard let index = toDoItems.firstIndex(where: { $0.id == item.id }) else { return }
         toDoItems[index].isCompleted = false
         saveToDoItems()
+    }
+
+    func completeSubtask(_ subtaskID: UUID, in itemID: UUID) {
+        guard let itemIndex = toDoItems.firstIndex(where: { $0.id == itemID }),
+              let subtaskIndex = toDoItems[itemIndex].subtasks.firstIndex(where: { $0.id == subtaskID })
+        else { return }
+        toDoItems[itemIndex].subtasks[subtaskIndex].isCompleted = true
+        resortSubtasksByCompletion(itemIndex: itemIndex)
+        saveToDoItems()
+    }
+
+    func uncompleteSubtask(_ subtaskID: UUID, in itemID: UUID) {
+        guard let itemIndex = toDoItems.firstIndex(where: { $0.id == itemID }),
+              let subtaskIndex = toDoItems[itemIndex].subtasks.firstIndex(where: { $0.id == subtaskID })
+        else { return }
+        toDoItems[itemIndex].subtasks[subtaskIndex].isCompleted = false
+        resortSubtasksByCompletion(itemIndex: itemIndex)
+        saveToDoItems()
+    }
+
+    /// Pushes completed subtasks below incomplete ones within a single parent task,
+    /// ordering each bucket by `sortOrder` (the original, completion-independent
+    /// position) rather than current array order — so unchecking a subtask returns it
+    /// to exactly where it started instead of just appending it to the incomplete group.
+    private func resortSubtasksByCompletion(itemIndex: Int) {
+        toDoItems[itemIndex].subtasks.sort { lhs, rhs in
+            if lhs.isCompleted != rhs.isCompleted {
+                return !lhs.isCompleted
+            }
+            return lhs.sortOrder < rhs.sortOrder
+        }
     }
 
     func moveToDoItems(from source: IndexSet, to destination: Int) {
@@ -2031,14 +3336,18 @@ final class TimeCircleViewModel: ObservableObject {
             return
         }
 
-        // All three types now have a daily budget countdown — targetBalanceToday already branches
-        // correctly between Pain's priority-scoped 2h budget and the shared pool (Pleasure's 6h,
-        // Neutral's 12h), so this is the exact same value the in-app circular timer shows.
-        let budgetCountdownRemaining: TimeInterval? = targetBalanceToday(
-            for: selectedTask.activityType,
-            priority: selectedTask.priority ?? .medium,
-            runningElapsed: elapsed
-        )
+        // Elapsed tracked earlier today for this activity's (type, priority) pool, excluding the
+        // live run in progress — mirrors timelineCountdownDisplay's own logic exactly, so the
+        // widget's count-up reads as the same elapsed the in-app ring shows. Neutral resets to
+        // 00:00:00 for each new session, so it never carries prior sessions into the widget.
+        let priorTodayElapsed: TimeInterval
+        if selectedTask.activityType == .pain {
+            priorTodayElapsed = trackedTime(for: .pain, priority: selectedTask.priority ?? .medium, in: elapsedTodayInterval)
+        } else if selectedTask.activityType == .none {
+            priorTodayElapsed = 0
+        } else {
+            priorTodayElapsed = trackedTime(for: selectedTask.activityType, in: elapsedTodayInterval)
+        }
 
         #if canImport(ActivityKit)
         if #available(iOS 16.2, *) {
@@ -2047,7 +3356,7 @@ final class TimeCircleViewModel: ObservableObject {
                 runningStartTime: runningStartTime,
                 elapsedBeforePause: elapsedBeforePause,
                 isPaused: state == .paused,
-                budgetCountdownRemaining: budgetCountdownRemaining
+                priorTodayElapsed: priorTodayElapsed
             )
         }
         #endif

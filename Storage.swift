@@ -70,6 +70,23 @@ enum TimeCircleStorage {
     private static let recentTaskInteractionDatesKey = "timeCircleRecentTaskInteractionDates"
     private static let expensesKey = "timeCircleExpenses"
     private static let totalBudgetKey = "timeCircleTotalBudget"
+    private static let debtsKey = "timeCircleDebts"
+    private static let moneyTopUpsKey = "timeCircleMoneyTopUps"
+    private static let budgetBaselineChangesKey = "timeCircleBudgetBaselineChanges"
+    private static let expenseIntentionPreferencesKey = "timeCircleExpenseIntentionPreferences"
+    private static let debtIntentionPreferencesKey = "timeCircleDebtIntentionPreferences"
+    private static let dismissedNoToDoTasksPromptTaskIDsKey = "timeCircleDismissedNoToDoTasksPromptTaskIDs"
+    private static let reminderMessagesKey = "timeCircleReminderMessages"
+    private static let remindersEnabledKey = "timeCircleRemindersEnabled"
+    private static let reminderIntervalMinutesKey = "timeCircleReminderIntervalMinutes"
+    private static let nextReminderDateKey = "timeCircleNextReminderDate"
+    private static let lastShownReminderIDKey = "timeCircleLastShownReminderID"
+
+    static let defaultReminderMessages: [ReminderMessage] = [
+        ReminderMessage(text: "Take a moment to reflect and track your day."),
+        ReminderMessage(text: "How are you feeling right now? Log an activity if something stands out."),
+        ReminderMessage(text: "A quick check-in now makes your day easier to look back on later.")
+    ]
 
     static let defaultTasks = [
         TaskItem(name: "Learning French", color: .red),
@@ -85,10 +102,10 @@ enum TimeCircleStorage {
         }
 
         return [
-            ExpenseItem(title: "Groceries", merchant: "Walmart", amount: 48.50, category: .groceries, date: daysAgo(0)),
-            ExpenseItem(title: "Lunch", merchant: "Chipotle", amount: 11.25, category: .food, date: daysAgo(1)),
-            ExpenseItem(title: "Bills", merchant: "Netflix", amount: 15.99, category: .bills, date: daysAgo(2)),
-            ExpenseItem(title: "Other", merchant: "Various", amount: 23.10, category: .other, date: daysAgo(2))
+            ExpenseItem(title: "Groceries", merchant: "Walmart", amount: 48.50, emoji: "🛒", date: daysAgo(0)),
+            ExpenseItem(title: "Lunch", merchant: "Chipotle", amount: 11.25, emoji: "🍔", date: daysAgo(1)),
+            ExpenseItem(title: "Bills", merchant: "Netflix", amount: 15.99, emoji: "📄", date: daysAgo(2)),
+            ExpenseItem(title: "Other", merchant: "Various", amount: 23.10, emoji: "🧾", date: daysAgo(2))
         ]
     }()
 
@@ -100,6 +117,46 @@ enum TimeCircleStorage {
 
     static func loadExpenses() -> [ExpenseItem]? {
         loadCodable([ExpenseItem].self, forKey: expensesKey)
+    }
+
+    static func save(debts: [DebtItem]) {
+        saveCodable(debts, forKey: debtsKey)
+    }
+
+    static func loadDebts() -> [DebtItem]? {
+        loadCodable([DebtItem].self, forKey: debtsKey)
+    }
+
+    static func save(moneyTopUps: [MoneyTopUp]) {
+        saveCodable(moneyTopUps, forKey: moneyTopUpsKey)
+    }
+
+    static func loadMoneyTopUps() -> [MoneyTopUp]? {
+        loadCodable([MoneyTopUp].self, forKey: moneyTopUpsKey)
+    }
+
+    static func save(budgetBaselineChanges: [BudgetBaselineChange]) {
+        saveCodable(budgetBaselineChanges, forKey: budgetBaselineChangesKey)
+    }
+
+    static func loadBudgetBaselineChanges() -> [BudgetBaselineChange]? {
+        loadCodable([BudgetBaselineChange].self, forKey: budgetBaselineChangesKey)
+    }
+
+    static func save(expenseIntentionPreferences: [String: IntentionPreference]) {
+        saveCodable(expenseIntentionPreferences, forKey: expenseIntentionPreferencesKey)
+    }
+
+    static func loadExpenseIntentionPreferences() -> [String: IntentionPreference]? {
+        loadCodable([String: IntentionPreference].self, forKey: expenseIntentionPreferencesKey)
+    }
+
+    static func save(debtIntentionPreferences: [String: IntentionPreference]) {
+        saveCodable(debtIntentionPreferences, forKey: debtIntentionPreferencesKey)
+    }
+
+    static func loadDebtIntentionPreferences() -> [String: IntentionPreference]? {
+        loadCodable([String: IntentionPreference].self, forKey: debtIntentionPreferencesKey)
     }
 
     static func save(totalBudget: Double) {
@@ -138,6 +195,65 @@ enum TimeCircleStorage {
 
     static func loadToDoItems() -> [ToDoItem]? {
         loadCodable([ToDoItem].self, forKey: toDoItemsKey)
+    }
+
+    static func save(dismissedNoToDoTasksPromptTaskIDs: Set<UUID>) {
+        saveCodable(dismissedNoToDoTasksPromptTaskIDs, forKey: dismissedNoToDoTasksPromptTaskIDsKey)
+    }
+
+    static func loadDismissedNoToDoTasksPromptTaskIDs() -> Set<UUID>? {
+        loadCodable(Set<UUID>.self, forKey: dismissedNoToDoTasksPromptTaskIDsKey)
+    }
+
+    static func save(reminderMessages: [ReminderMessage]) {
+        saveCodable(reminderMessages, forKey: reminderMessagesKey)
+    }
+
+    static func loadReminderMessages() -> [ReminderMessage]? {
+        loadCodable([ReminderMessage].self, forKey: reminderMessagesKey)
+    }
+
+    static func save(remindersEnabled: Bool) {
+        UserDefaults.standard.set(remindersEnabled, forKey: remindersEnabledKey)
+    }
+
+    static func loadRemindersEnabled() -> Bool? {
+        guard UserDefaults.standard.object(forKey: remindersEnabledKey) != nil else { return nil }
+        return UserDefaults.standard.bool(forKey: remindersEnabledKey)
+    }
+
+    static func save(reminderIntervalMinutes: Int) {
+        UserDefaults.standard.set(reminderIntervalMinutes, forKey: reminderIntervalMinutesKey)
+    }
+
+    static func loadReminderIntervalMinutes() -> Int? {
+        guard UserDefaults.standard.object(forKey: reminderIntervalMinutesKey) != nil else { return nil }
+        return UserDefaults.standard.integer(forKey: reminderIntervalMinutesKey)
+    }
+
+    static func save(nextReminderDate: Date?) {
+        guard let nextReminderDate else {
+            UserDefaults.standard.removeObject(forKey: nextReminderDateKey)
+            return
+        }
+        UserDefaults.standard.set(nextReminderDate, forKey: nextReminderDateKey)
+    }
+
+    static func loadNextReminderDate() -> Date? {
+        UserDefaults.standard.object(forKey: nextReminderDateKey) as? Date
+    }
+
+    static func save(lastShownReminderID: UUID?) {
+        guard let lastShownReminderID else {
+            UserDefaults.standard.removeObject(forKey: lastShownReminderIDKey)
+            return
+        }
+        UserDefaults.standard.set(lastShownReminderID.uuidString, forKey: lastShownReminderIDKey)
+    }
+
+    static func loadLastShownReminderID() -> UUID? {
+        guard let string = UserDefaults.standard.string(forKey: lastShownReminderIDKey) else { return nil }
+        return UUID(uuidString: string)
     }
 
     static func save(activeTrackingState: ActiveTrackingState?) {

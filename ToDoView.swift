@@ -9,9 +9,13 @@ struct ToDoView: View {
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("appAppearanceMode") private var appearanceModeRaw = AppAppearanceMode.system.rawValue
     @State private var isDatePillPressed = false
+    @State private var datePillLongPressTimer: DispatchWorkItem?
+    @State private var datePillDidTriggerLongPress = false
     @State private var expandedGroupIDs: Set<String> = []
+    @State private var expandedActivityBlockIDs: Set<String> = []
     @State private var revealedToDoItemID: UUID?
     @State private var revealedToDoItemOffset: CGFloat = 0
+    @State private var expandedToDoItemIDs: Set<UUID> = []
 
     private var appearanceMode: AppAppearanceMode {
         AppAppearanceMode(rawValue: appearanceModeRaw) ?? .system
@@ -22,6 +26,14 @@ struct ToDoView: View {
     }
 
     var body: some View {
+        if viewModel.isSelectingToDoItemForTracking, let source = viewModel.toDoItemSelectionSource {
+            toDoItemSelectionContent(for: source)
+        } else {
+            mainContent
+        }
+    }
+
+    private var mainContent: some View {
         ZStack(alignment: .bottom) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
@@ -33,22 +45,17 @@ struct ToDoView: View {
                         .foregroundStyle(.primary)
                         .padding(.top, 24)
 
-                    if viewModel.toDoGroupsForSelectedDay.isEmpty {
-                        emptyState
-                            .padding(.top, 24)
-                    } else {
-                        Text("Activities")
-                            .font(.system(size: 15))
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 24)
+                    Text("Activities")
+                        .font(.system(size: 15))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 24)
 
-                        VStack(spacing: 10) {
-                            ForEach(viewModel.toDoGroupsForSelectedDay) { group in
-                                groupSection(group)
-                            }
+                    VStack(spacing: 10) {
+                        ForEach(viewModel.toDoGroupsForSelectedDay) { group in
+                            groupSection(group)
                         }
-                        .padding(.top, 10)
                     }
+                    .padding(.top, 10)
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, viewModel.isViewingToday ? 110 : 24)
@@ -69,6 +76,121 @@ struct ToDoView: View {
         .sheet(isPresented: $viewModel.isShowingAddToDoItem) {
             AddToDoItemView(viewModel: viewModel)
         }
+    }
+
+    /// Shown in place of the normal To-Do list right after the user starts tracking an
+    /// activity that has tasks assigned to it — lets them pick which one this session is
+    /// for, then hands control back to `ContentView` (via `viewModel.isSelectingToDoItemForTracking`
+    /// turning false) to return to the Tracking screen. Also reused, unchanged, for "Continue
+    /// Without Selecting an Activity" — there `source` is `.general(type, priority)` instead
+    /// of `.activity(taskID)`, so the items come from that type/priority's "General" tasks.
+    private func toDoItemSelectionContent(for source: ToDoSelectionSource) -> some View {
+        let items = viewModel.toDoItems(for: source)
+        let displayName = viewModel.displayName(for: source)
+
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Button {
+                    viewModel.cancelToDoItemSelection()
+                } label: {
+                    Text("Cancel")
+                        .font(.system(size: 17, weight: .regular))
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 10)
+                        .background(Capsule().fill(cardBackground))
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+            }
+            .padding(.top, 20)
+
+            Text("Select a Task")
+                .font(.system(size: 34, weight: .heavy))
+                .foregroundStyle(.primary)
+                .padding(.top, 28)
+
+            Text("Which task are you working on for \(displayName)?")
+                .font(.system(size: 17))
+                .foregroundStyle(.secondary)
+                .padding(.top, 12)
+
+            ScrollView {
+                VStack(spacing: 10) {
+                    Button {
+                        viewModel.cancelToDoItemSelection()
+                    } label: {
+                        HStack(spacing: 14) {
+                            Text("None")
+                                .font(.system(size: 17, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+
+                            Spacer(minLength: 8)
+
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(Color.secondary.opacity(0.6))
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(cardBackground)
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    ForEach(items) { item in
+                        HStack(spacing: 14) {
+                            Button {
+                                AudioServicesPlaySystemSound(1104)
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.55)) {
+                                    viewModel.completeToDoItem(item)
+                                }
+                                viewModel.handleToDoItemCompletedDuringTracking(for: source)
+                            } label: {
+                                Image(systemName: "circle")
+                                    .font(.system(size: 22, weight: .regular))
+                                    .foregroundStyle(Color.secondary.opacity(0.5))
+                            }
+                            .buttonStyle(.plain)
+
+                            Button {
+                                viewModel.selectToDoItemForTracking(item)
+                            } label: {
+                                HStack(spacing: 14) {
+                                    Text(item.title)
+                                        .font(.system(size: 17, weight: .semibold))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+
+                                    Spacer(minLength: 8)
+
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundStyle(Color.secondary.opacity(0.6))
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(cardBackground)
+                        )
+                    }
+                }
+                .padding(.top, 20)
+                .padding(.bottom, 24)
+            }
+        }
+        .padding(.horizontal, 20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(activityPickerSystemBackground).ignoresSafeArea())
+        .gesture(swipeGesture)
     }
 
     private func groupSection(_ group: ToDoGroup) -> some View {
@@ -95,15 +217,7 @@ struct ToDoView: View {
 
                                 VStack(alignment: .leading, spacing: 8) {
                                     ForEach(Array(subBlocks(for: priorityGroup).enumerated()), id: \.element.id) { subIndex, block in
-                                        VStack(alignment: .leading, spacing: 8) {
-                                            if let title = block.title {
-                                                Text(title)
-                                                    .font(.system(size: 13, weight: .semibold))
-                                                    .foregroundStyle(.secondary)
-                                            }
-
-                                            groupCard(block.items)
-                                        }
+                                        blockContent(block)
                                     }
                                 }
                             }
@@ -115,13 +229,7 @@ struct ToDoView: View {
                                     Divider()
                                 }
 
-                                if let title = block.title {
-                                    Text(title)
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .foregroundStyle(.secondary)
-                                }
-
-                                groupCard(block.items)
+                                blockContent(block)
                             }
                         }
                     }
@@ -155,6 +263,52 @@ struct ToDoView: View {
         }
 
         return blocks
+    }
+
+    /// A block's title with its own disclosure chevron — collapsed by default,
+    /// independent of the outer Pain/Pleasure/Other chevron. Blocks with zero tasks
+    /// never reach this view (`subBlocks` only emits blocks with items), so a block is
+    /// never shown collapsed-and-empty.
+    private func blockHeader(_ block: ToDoSubBlock, isExpanded: Bool) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                if isExpanded {
+                    expandedActivityBlockIDs.remove(block.id)
+                } else {
+                    expandedActivityBlockIDs.insert(block.id)
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                if let title = block.title {
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 8)
+
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(isExpanded ? 180 : 0))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// A block's title/chevron header plus its task list, shown only when expanded.
+    private func blockContent(_ block: ToDoSubBlock) -> some View {
+        let isExpanded = expandedActivityBlockIDs.contains(block.id)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            blockHeader(block, isExpanded: isExpanded)
+
+            if isExpanded {
+                groupCard(block.items)
+            }
+        }
     }
 
     private func groupHeader(_ group: ToDoGroup, isExpanded: Bool) -> some View {
@@ -271,36 +425,53 @@ struct ToDoView: View {
                     Divider()
                         .padding(.leading, 54)
                 }
-                ToDoRowView(
-                    item: item,
-                    revealedOffset: revealedToDoItemID == item.id ? revealedToDoItemOffset : 0,
-                    onToggleComplete: {
-                        if item.isCompleted {
-                            withAnimation(.easeInOut(duration: 0.15)) {
-                                viewModel.uncompleteToDoItem(item)
+                VStack(spacing: 0) {
+                    ToDoRowView(
+                        item: item,
+                        revealedOffset: revealedToDoItemID == item.id ? revealedToDoItemOffset : 0,
+                        isExpanded: expandedToDoItemIDs.contains(item.id),
+                        onToggleComplete: {
+                            if item.isCompleted {
+                                withAnimation(.easeInOut(duration: 0.15)) {
+                                    viewModel.uncompleteToDoItem(item)
+                                }
+                            } else {
+                                AudioServicesPlaySystemSound(1104)
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.55)) {
+                                    viewModel.completeToDoItem(item)
+                                }
                             }
-                        } else {
-                            AudioServicesPlaySystemSound(1104)
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.55)) {
-                                viewModel.completeToDoItem(item)
-                            }
-                        }
-                    },
-                    onEdit: {
-                        revealedToDoItemID = nil
-                        revealedToDoItemOffset = 0
-                        viewModel.openEditToDoItemSheet(item)
-                    },
-                    onRevealChange: { newOffset in
-                        if newOffset == 0 {
+                        },
+                        onEdit: {
                             revealedToDoItemID = nil
                             revealedToDoItemOffset = 0
-                        } else {
-                            revealedToDoItemID = item.id
-                            revealedToDoItemOffset = newOffset
+                            viewModel.openEditToDoItemSheet(item)
+                        },
+                        onRevealChange: { newOffset in
+                            if newOffset == 0 {
+                                revealedToDoItemID = nil
+                                revealedToDoItemOffset = 0
+                            } else {
+                                revealedToDoItemID = item.id
+                                revealedToDoItemOffset = newOffset
+                            }
+                        },
+                        onToggleExpand: {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                if expandedToDoItemIDs.contains(item.id) {
+                                    expandedToDoItemIDs.remove(item.id)
+                                } else {
+                                    expandedToDoItemIDs.insert(item.id)
+                                }
+                            }
                         }
+                    )
+
+                    if !item.subtasks.isEmpty && expandedToDoItemIDs.contains(item.id) {
+                        subtasksList(item)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
                     }
-                )
+                }
             }
         }
         .padding(.vertical, 6)
@@ -310,28 +481,47 @@ struct ToDoView: View {
         )
     }
 
-    private var emptyState: some View {
-        VStack(spacing: 8) {
-            ZStack {
-                Circle()
-                    .fill(Color.primary.opacity(0.06))
-                    .frame(width: 44, height: 44)
-
-                Image(systemName: "tray")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(.secondary)
+    private func subtasksList(_ item: ToDoItem) -> some View {
+        VStack(spacing: 0) {
+            ForEach(item.subtasks) { subtask in
+                subtaskRow(subtask, parent: item)
             }
-
-            Text("No tasks yet")
-                .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(.primary)
-
-            Text(viewModel.isViewingToday ? "Add your first task to get started." : "No tasks were completed this day.")
-                .font(.system(size: 14))
-                .foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 24)
+        .padding(.leading, 50)
+        .padding(.trailing, 12)
+        .padding(.bottom, 8)
+    }
+
+    private func subtaskRow(_ subtask: SubtaskItem, parent: ToDoItem) -> some View {
+        HStack(spacing: 10) {
+            Button {
+                if subtask.isCompleted {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        viewModel.uncompleteSubtask(subtask.id, in: parent.id)
+                    }
+                } else {
+                    AudioServicesPlaySystemSound(1104)
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.55)) {
+                        viewModel.completeSubtask(subtask.id, in: parent.id)
+                    }
+                }
+            } label: {
+                Image(systemName: subtask.isCompleted ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 17, weight: .regular))
+                    .foregroundStyle(subtask.isCompleted ? Color.green : Color.secondary.opacity(0.5))
+                    .symbolEffect(.bounce, value: subtask.isCompleted)
+            }
+            .buttonStyle(.plain)
+
+            Text(subtask.title)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.primary)
+                .strikethrough(subtask.isCompleted)
+                .lineLimit(1)
+
+            Spacer(minLength: 4)
+        }
+        .padding(.vertical, 8)
     }
 
     private var floatingAddButton: some View {
@@ -359,19 +549,27 @@ struct ToDoView: View {
                 appearanceMenu
 
                 Spacer()
+
+                settingsButton
             }
             .frame(height: 36, alignment: .center)
 
             dateSelector
-                .overlay(alignment: .trailing) {
-                    if !viewModel.isViewingToday {
-                        returnToTodayButton
-                            .offset(x: 46)
-                    }
-                }
         }
         .frame(maxWidth: .infinity)
         .frame(height: 36, alignment: .center)
+    }
+
+    private var settingsButton: some View {
+        Button {
+            viewModel.isShowingSettings = true
+        } label: {
+            Image(systemName: "gearshape")
+                .font(.system(size: 21, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 36, height: 36)
+        }
+        .buttonStyle(.plain)
     }
 
     private var appearanceMenu: some View {
@@ -408,7 +606,21 @@ struct ToDoView: View {
         .contentShape(Capsule())
         .scaleEffect(isDatePillPressed ? 0.98 : 1)
         .animation(.easeInOut(duration: 0.12), value: isDatePillPressed)
-        .gesture(datePillGesture)
+        .highPriorityGesture(datePillGesture)
+        .onChange(of: viewModel.isShowingHistoryPicker) { oldValue, newValue in
+            // When the Heatmap was opened via long press, the sheet presentation cancels the
+            // in-flight touch before the DragGesture's `onEnded` ever runs, so `defer` there
+            // never resets `datePillDidTriggerLongPress` — leaving it stuck `true` and causing
+            // the *next* tap's `onEnded` to bail out via its guard. Resetting all the pill's
+            // transient gesture state here, on dismissal, makes sure the first tap afterward is
+            // handled normally instead of being silently swallowed.
+            if oldValue, !newValue {
+                datePillLongPressTimer?.cancel()
+                datePillLongPressTimer = nil
+                datePillDidTriggerLongPress = false
+                isDatePillPressed = false
+            }
+        }
     }
 
     private var swipeGesture: some Gesture {
@@ -430,6 +642,11 @@ struct ToDoView: View {
             }
     }
 
+    /// Tap vs. swipe vs. long-press all share this one `DragGesture(minimumDistance: 0)` so a
+    /// press can start out ambiguous and resolve as any of the three. Swipe still moves the
+    /// selected day by one. A tap opens the Heatmap while viewing today, or returns to today
+    /// while viewing a past day. A long press (past day only — today does nothing extra beyond
+    /// its own tap behavior) opens the Heatmap without first needing to return to today.
     private var datePillGesture: some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
@@ -440,8 +657,29 @@ struct ToDoView: View {
                     && abs(horizontalDistance) > abs(verticalDistance)
 
                 isDatePillPressed = !isSwipe
+
+                if datePillLongPressTimer == nil, !datePillDidTriggerLongPress, !isSwipe, !viewModel.isViewingToday {
+                    let timer = DispatchWorkItem {
+                        datePillDidTriggerLongPress = true
+                        isDatePillPressed = false
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            viewModel.openHistoryPicker()
+                        }
+                    }
+                    datePillLongPressTimer = timer
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: timer)
+                }
+
+                if isSwipe {
+                    datePillLongPressTimer?.cancel()
+                    datePillLongPressTimer = nil
+                }
             }
             .onEnded { value in
+                datePillLongPressTimer?.cancel()
+                datePillLongPressTimer = nil
+                defer { datePillDidTriggerLongPress = false }
+
                 let horizontalDistance = value.translation.width
                 let verticalDistance = value.translation.height
                 let horizontalThreshold: CGFloat = 45
@@ -449,6 +687,8 @@ struct ToDoView: View {
                     && abs(horizontalDistance) > abs(verticalDistance)
 
                 isDatePillPressed = false
+
+                guard !datePillDidTriggerLongPress else { return }
 
                 if isSwipe {
                     withAnimation(.easeInOut(duration: 0.25)) {
@@ -460,26 +700,14 @@ struct ToDoView: View {
                     }
                 } else {
                     withAnimation(.easeInOut(duration: 0.25)) {
-                        viewModel.openHistoryPicker()
+                        if viewModel.isViewingToday {
+                            viewModel.openHistoryPicker()
+                        } else {
+                            viewModel.selectToday()
+                        }
                     }
                 }
             }
-    }
-
-    private var returnToTodayButton: some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.25)) {
-                viewModel.selectToday()
-            }
-        } label: {
-            Image(systemName: "calendar.badge.clock")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(colorScheme == .light ? Color.black.opacity(0.82) : .white)
-                .frame(width: 34, height: 34)
-                .background(colorScheme == .light ? Color.black.opacity(0.08) : Color.white.opacity(0.14))
-                .clipShape(Circle())
-        }
-        .buttonStyle(.plain)
     }
 }
 
@@ -490,13 +718,17 @@ struct ToDoView: View {
 private struct ToDoRowView: View {
     let item: ToDoItem
     let revealedOffset: CGFloat
+    let isExpanded: Bool
     let onToggleComplete: () -> Void
     let onEdit: () -> Void
     let onRevealChange: (CGFloat) -> Void
+    let onToggleExpand: () -> Void
+
+    private var hasSubtasks: Bool { !item.subtasks.isEmpty }
 
     @State private var rowWidth: CGFloat = 0
     @State private var checkboxWidth: CGFloat = 22
-    @State private var dragHandleWidth: CGFloat = 15
+    @State private var dragHandleWidth: CGFloat = 0
     @State private var dragTranslation: CGFloat = 0
     @State private var longPressTimer: DispatchWorkItem?
     @State private var didTriggerLongPress = false
@@ -627,14 +859,22 @@ private struct ToDoRowView: View {
                     }
             )
 
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Color.secondary.opacity(0.6))
+            if hasSubtasks {
+                Button(action: onToggleExpand) {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.secondary.opacity(0.6))
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
                 .background(
                     GeometryReader { geo in
                         Color.clear.onAppear { dragHandleWidth = geo.size.width }
                     }
                 )
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 14)

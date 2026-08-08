@@ -12,6 +12,7 @@ struct EditSessionView: View {
     var showsDeleteButton = true
     var dateRange: ClosedRange<Date>?
     var activities: [TaskItem] = []
+    var completedTasks: [CompletedTaskSnapshot] = []
     var onSave: () -> Void
     var onDelete: () -> Void
 
@@ -68,6 +69,15 @@ struct EditSessionView: View {
                         Text("End time must be after start time.")
                             .font(.footnote)
                             .foregroundStyle(.red)
+                    }
+                }
+
+                if !completedTasks.isEmpty {
+                    Section("Completed Tasks") {
+                        ForEach(completedTasks) { task in
+                            CompletedTaskRowView(title: task.title)
+                                .listRowInsets(EdgeInsets())
+                        }
                     }
                 }
 

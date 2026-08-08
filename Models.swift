@@ -60,6 +60,7 @@ struct TaskItem: Identifiable, Equatable, Codable {
     var description: String
     var activityType: ActivityType
     var priority: ActivityPriority?
+    var emoji: String
 
     init(
         id: UUID = UUID(),
@@ -67,7 +68,8 @@ struct TaskItem: Identifiable, Equatable, Codable {
         color: StoredColor,
         description: String = "",
         activityType: ActivityType = .pain,
-        priority: ActivityPriority? = nil
+        priority: ActivityPriority? = nil,
+        emoji: String = ""
     ) {
         self.id = id
         self.name = name
@@ -75,6 +77,7 @@ struct TaskItem: Identifiable, Equatable, Codable {
         self.description = description
         self.activityType = activityType
         self.priority = activityType.hasPriorityTiers ? (priority ?? .medium) : nil
+        self.emoji = emoji
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -84,6 +87,7 @@ struct TaskItem: Identifiable, Equatable, Codable {
         case description
         case activityType
         case priority
+        case emoji
     }
 
     init(from decoder: Decoder) throws {
@@ -96,6 +100,7 @@ struct TaskItem: Identifiable, Equatable, Codable {
         activityType = try container.decodeIfPresent(ActivityType.self, forKey: .activityType) ?? .pain
         let decodedPriority = try container.decodeIfPresent(ActivityPriority.self, forKey: .priority)
         priority = activityType.hasPriorityTiers ? (decodedPriority ?? .medium) : nil
+        emoji = try container.decodeIfPresent(String.self, forKey: .emoji) ?? ""
     }
 }
 
@@ -113,7 +118,7 @@ enum ActivityType: String, CaseIterable, Identifiable, Codable {
     var title: String {
         switch self {
         case .none:
-            return "Neutral"
+            return "Other"
         case .pain:
             return "Pain"
         case .pleasure:
@@ -122,14 +127,14 @@ enum ActivityType: String, CaseIterable, Identifiable, Codable {
     }
 
     /// Whether this type is broken into High/Medium/Low tiers (Pain, Pleasure) versus a single
-    /// flat daily budget with no priority concept (Neutral).
+    /// flat daily budget with no priority concept (Other).
     var hasPriorityTiers: Bool {
         self == .pain || self == .pleasure
     }
 
     /// For Pain/Pleasure: aggregate of all three priority budgets combined, for display-only
     /// rollups (statistics, heatmap) — actual enforcement happens per-priority via
-    /// `ActivityPriority.dailyBudgetDuration`. Neutral has no priority tiers, so it owns a single
+    /// `ActivityPriority.dailyBudgetDuration`. Other has no priority tiers, so it owns a single
     /// flat 12-hour daily budget directly, enforced the same way Pleasure's combined pool is.
     var totalDailyBudgetDuration: TimeInterval {
         switch self {
@@ -245,6 +250,11 @@ struct SessionItem: Identifiable, Equatable, Codable {
     var sessionDescription: String
     var subActivityIDs: [UUID]
     var priority: ActivityPriority?
+    /// Immutable snapshot of the To-Do tasks completed while this session was active,
+    /// in completion order. Captured once when the session is saved and never
+    /// recomputed afterward — later renames/edits/deletions of those tasks must not
+    /// change what's shown here.
+    var completedTasks: [CompletedTaskSnapshot]
 
     init(
         id: UUID = UUID(),
@@ -255,7 +265,8 @@ struct SessionItem: Identifiable, Equatable, Codable {
         activityType: ActivityType = .pain,
         sessionDescription: String = "",
         subActivityIDs: [UUID] = [],
-        priority: ActivityPriority? = nil
+        priority: ActivityPriority? = nil,
+        completedTasks: [CompletedTaskSnapshot] = []
     ) {
         self.id = id
         self.taskName = taskName
@@ -266,6 +277,7 @@ struct SessionItem: Identifiable, Equatable, Codable {
         self.sessionDescription = sessionDescription
         self.subActivityIDs = subActivityIDs
         self.priority = activityType.hasPriorityTiers ? (priority ?? .medium) : nil
+        self.completedTasks = completedTasks
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -278,6 +290,7 @@ struct SessionItem: Identifiable, Equatable, Codable {
         case sessionDescription
         case subActivityIDs
         case priority
+        case completedTasks
     }
 
     init(from decoder: Decoder) throws {
@@ -293,6 +306,7 @@ struct SessionItem: Identifiable, Equatable, Codable {
         subActivityIDs = try container.decodeIfPresent([UUID].self, forKey: .subActivityIDs) ?? []
         let decodedPriority = try container.decodeIfPresent(ActivityPriority.self, forKey: .priority)
         priority = activityType.hasPriorityTiers ? (decodedPriority ?? .medium) : nil
+        completedTasks = try container.decodeIfPresent([CompletedTaskSnapshot].self, forKey: .completedTasks) ?? []
     }
 
     var endTime: Date {
@@ -308,13 +322,55 @@ struct SessionItem: Identifiable, Equatable, Codable {
     }
 }
 
+/// A permanent, point-in-time record of a To-Do task that was completed while a tracking
+/// session was active. Stored inline on the `SessionItem` at save time — never re-derived
+/// from `ToDoItem` state afterward, so it stays accurate even if the source task is later
+/// renamed, moved, repeated, or deleted.
+struct CompletedTaskSnapshot: Identifiable, Equatable, Codable {
+    var id = UUID()
+    var title: String
+}
+
+/// A lightweight checklist item nested under a `ToDoItem`. Has its own completion
+/// state but is never stored or shown as a standalone task — it only exists as part
+/// of its parent's `subtasks` array.
+struct SubtaskItem: Identifiable, Equatable, Codable {
+    var id = UUID()
+    var title: String
+    var isCompleted: Bool = false
+    /// The subtask's user-defined position among its siblings, independent of
+    /// completion state — lets a completed subtask return to exactly where it was
+    /// when it's unchecked again, instead of just falling in with the incomplete ones.
+    var sortOrder: Int = 0
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, isCompleted, sortOrder
+    }
+
+    init(id: UUID = UUID(), title: String, isCompleted: Bool = false, sortOrder: Int = 0) {
+        self.id = id
+        self.title = title
+        self.isCompleted = isCompleted
+        self.sortOrder = sortOrder
+    }
+
+    /// Custom decoding so subtasks saved before `sortOrder` existed still decode.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        isCompleted = try container.decode(Bool.self, forKey: .isCompleted)
+        sortOrder = try container.decodeIfPresent(Int.self, forKey: .sortOrder) ?? 0
+    }
+}
+
 struct ToDoItem: Identifiable, Equatable, Codable {
     var id = UUID()
     var title: String
     /// A specific existing activity this task belongs to. Mutually exclusive with
     /// `activityType` — at most one of the two is ever set at a time.
     var activityTaskID: UUID?
-    /// A bare Pain/Pleasure/Neutral category, used when the task isn't tied to any
+    /// A bare Pain/Pleasure/Other category, used when the task isn't tied to any
     /// specific activity yet (e.g. the activity doesn't exist in the app so far).
     var activityType: ActivityType?
     /// Only meaningful when `activityType` is set directly (no specific activity) and
@@ -324,6 +380,21 @@ struct ToDoItem: Identifiable, Equatable, Codable {
     var day: Date
     var isCompleted: Bool
     var sortOrder: Int
+    var subtasks: [SubtaskItem]
+    /// Weekdays this task repeats on, using `Calendar`'s `.weekday` component values
+    /// (1 = Sunday ... 7 = Saturday). Empty means the task is a normal, one-off task.
+    var recurringWeekdays: Set<Int>
+    /// Links every generated occurrence of a recurring task together. `nil` for
+    /// non-recurring tasks. The occurrence with the latest `day` in a group is the
+    /// authoritative source for its schedule when generating the next occurrence, so
+    /// editing an older occurrence's `recurringWeekdays` never rewrites history.
+    var recurrenceGroupID: UUID?
+    /// Permanent, task-level text — identical across every occurrence of a recurring
+    /// series. Editing it is propagated to every item sharing `recurrenceGroupID`.
+    var taskDescription: String
+    /// Day-specific text that belongs only to this occurrence — never copied to other
+    /// occurrences (past, future, or generated) of the same recurring series.
+    var notes: String
 
     init(
         id: UUID = UUID(),
@@ -333,7 +404,12 @@ struct ToDoItem: Identifiable, Equatable, Codable {
         manualPriority: ActivityPriority? = nil,
         day: Date,
         isCompleted: Bool = false,
-        sortOrder: Int = 0
+        sortOrder: Int = 0,
+        subtasks: [SubtaskItem] = [],
+        recurringWeekdays: Set<Int> = [],
+        recurrenceGroupID: UUID? = nil,
+        taskDescription: String = "",
+        notes: String = ""
     ) {
         self.id = id
         self.title = title
@@ -343,17 +419,48 @@ struct ToDoItem: Identifiable, Equatable, Codable {
         self.day = day
         self.isCompleted = isCompleted
         self.sortOrder = sortOrder
+        self.subtasks = subtasks
+        self.recurringWeekdays = recurringWeekdays
+        self.recurrenceGroupID = recurrenceGroupID
+        self.taskDescription = taskDescription
+        self.notes = notes
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, activityTaskID, activityType, manualPriority, day, isCompleted, sortOrder, subtasks
+        case recurringWeekdays, recurrenceGroupID, taskDescription, notes
+    }
+
+    /// Custom decoding so tasks saved before subtasks/recurrence/description/notes
+    /// existed (missing keys in their stored JSON) still decode instead of failing the
+    /// whole array.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        activityTaskID = try container.decodeIfPresent(UUID.self, forKey: .activityTaskID)
+        activityType = try container.decodeIfPresent(ActivityType.self, forKey: .activityType)
+        manualPriority = try container.decodeIfPresent(ActivityPriority.self, forKey: .manualPriority)
+        day = try container.decode(Date.self, forKey: .day)
+        isCompleted = try container.decode(Bool.self, forKey: .isCompleted)
+        sortOrder = try container.decode(Int.self, forKey: .sortOrder)
+        subtasks = try container.decodeIfPresent([SubtaskItem].self, forKey: .subtasks) ?? []
+        recurringWeekdays = try container.decodeIfPresent(Set<Int>.self, forKey: .recurringWeekdays) ?? []
+        recurrenceGroupID = try container.decodeIfPresent(UUID.self, forKey: .recurrenceGroupID)
+        taskDescription = try container.decodeIfPresent(String.self, forKey: .taskDescription) ?? ""
+        notes = try container.decodeIfPresent(String.self, forKey: .notes) ?? ""
     }
 }
 
-/// A row in the To-Do "Activities" list. Top-level groups are Pain/Pleasure/Neutral
-/// (`type` set, `activity` nil) or "Other" (`type` and `activity` nil).
+/// A row in the To-Do "Activities" list. Top-level groups are always Pain/Pleasure/Other
+/// (`type` set, `activity` nil) — every task belongs to one of the three, so there's no
+/// separate bucket for unassigned tasks.
 ///
 /// For Pain/Pleasure, the type group's `subGroups` are priority groups (`priority` set,
 /// `activity` nil) — one per High/Medium/Low that actually has a task in it — and each
 /// priority group's own `subGroups` are the specific named activities at that priority.
-/// For Neutral (no priority concept) and "Other", `subGroups` go straight to specific
-/// named activities, skipping the priority layer entirely.
+/// For Other (no priority concept), `subGroups` go straight to specific named activities,
+/// skipping the priority layer entirely.
 struct ToDoGroup: Identifiable {
     var id: String
     var type: ActivityType?
@@ -487,6 +594,47 @@ struct ActiveTrackingInterval: Codable, Equatable {
     var end: Date
 }
 
+/// A single user-managed message the global Reminder popup can randomly surface. Distinct from
+/// the Pain-specific `ReminderView` — this one is app-wide, on a timer, and its text is entirely
+/// user-authored rather than a fixed quote.
+struct ReminderMessage: Identifiable, Equatable, Codable {
+    var id = UUID()
+    var text: String
+    var isEnabled: Bool = true
+
+    init(id: UUID = UUID(), text: String, isEnabled: Bool = true) {
+        self.id = id
+        self.text = text
+        self.isEnabled = isEnabled
+    }
+}
+
+/// Selectable durations for both the global reminder's default interval and its per-popup
+/// "Remind me later" choice.
+enum ReminderInterval: Int, CaseIterable, Identifiable {
+    case fifteenMinutes = 15
+    case thirtyMinutes = 30
+    case oneHour = 60
+    case twoHours = 120
+
+    var id: Int { rawValue }
+
+    var minutes: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .fifteenMinutes: return "15 min"
+        case .thirtyMinutes: return "30 min"
+        case .oneHour: return "1 hour"
+        case .twoHours: return "2 hours"
+        }
+    }
+
+    static func closest(toMinutes minutes: Int) -> ReminderInterval {
+        allCases.first { $0.minutes == minutes } ?? .thirtyMinutes
+    }
+}
+
 enum TimeCircleFormat {
     static func clock(_ date: Date) -> String {
         let formatter = DateFormatter()
@@ -505,6 +653,13 @@ enum TimeCircleFormat {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "ss"
+        return formatter.string(from: date)
+    }
+
+    static func minutesSeconds(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "mm:ss"
         return formatter.string(from: date)
     }
 

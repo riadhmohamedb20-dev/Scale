@@ -14,13 +14,13 @@ struct TimelineView: View {
     var startTime: Date?
     var activeIntervals: [DateInterval] = []
     var elapsed: TimeInterval
-    var displayElapsed: TimeInterval
     var currentTime: Date
-    var showsCurrentTimeWhenEmpty: Bool = true
     var highlightedSessionIDs: Set<UUID> = []
     var selectedSession: SessionItem?
     var onSelectSession: (SessionItem) -> Void
     var onClearSelection: () -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
 
     private let size: CGFloat = 370
     private let outerRadius: CGFloat = 145
@@ -106,6 +106,16 @@ struct TimelineView: View {
                 .stroke(.gray.opacity(0.38), lineWidth: 2)
                 .frame(width: outerRadius * 2, height: outerRadius * 2)
 
+            majorUnitElapsedArc
+
+            minorUnitElapsedArc
+
+            minorUnitElapsedTip
+
+            followingTimeLabel
+
+            centerActivityEmoji
+
             Circle()
                 .stroke(.gray.opacity(0.32), lineWidth: 2)
                 .frame(width: innerRadius * 2, height: innerRadius * 2)
@@ -121,60 +131,10 @@ struct TimelineView: View {
             ForEach(labelIndices, id: \.self) { tick in
                 timelineLabel(tick)
             }
-
-            if shouldShowCurrentTimeMarker {
-                currentTimeMarker
-            }
-
-            centerDisplay
-                .frame(width: 180)
         }
         .frame(width: size, height: size)
     }
 
-    @ViewBuilder
-    private var centerDisplay: some View {
-        switch scope {
-        case .day:
-            if showsCurrentTimeWhenEmpty {
-                centerCurrentTimeText
-            }
-        case .hour:
-            centerElapsedTimerText
-        }
-    }
-
-    private var centerCurrentTimeText: some View {
-        VStack(spacing: 2) {
-            Text(TimeCircleFormat.twentyFourHourClock(currentTime))
-                .font(.system(size: 38, weight: .bold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-                .allowsTightening(true)
-
-            Text(TimeCircleFormat.seconds(currentTime))
-                .font(.system(size: 18, weight: .semibold).monospacedDigit())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-    }
-
-    private var centerElapsedTimerText: some View {
-        VStack(spacing: 2) {
-            Text(TimeCircleFormat.countdownHoursMinutes(Int(displayElapsed)))
-                .font(.system(size: 38, weight: .bold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-                .allowsTightening(true)
-
-            Text(TimeCircleFormat.countdownSeconds(Int(displayElapsed)))
-                .font(.system(size: 18, weight: .semibold).monospacedDigit())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-    }
 
     private var isZoomed: Bool {
         zoomScale > 1.01 || abs(zoomOffset.width) > 0.5 || abs(zoomOffset.height) > 0.5
@@ -298,10 +258,6 @@ struct TimelineView: View {
         Calendar.current.dateInterval(of: .hour, for: currentTime)
     }
 
-    private var shouldShowCurrentTimeMarker: Bool {
-        showsCurrentTimeWhenEmpty
-    }
-
     private func timelineLabel(_ tick: Int) -> some View {
         let angle = degreesForTick(tick)
         let radius: CGFloat = 166
@@ -337,21 +293,120 @@ struct TimelineView: View {
         }
     }
 
-    private var currentTimeMarker: some View {
-        let angle = angleForDate(currentTime)
-        let radius: CGFloat = 128
-        let radians = (angle - 90) * .pi / 180
-        let iconSize: CGFloat = scope == .hour ? 18 : 12
-        let frameSize: CGFloat = scope == .hour ? 30 : 22
+    /// A live clock face traced directly on the outer circle, always visible and ticking every
+    /// second regardless of tracking state — independent of the thick session-color arcs. It
+    /// nests two units the same way an analog clock nests hour/minute hands, just one level
+    /// zoomed in per scope: day scope shows hours-elapsed-today (major) and minutes-elapsed-in-
+    /// the-current-hour (minor, resetting every hour); hour scope shows minutes-elapsed-in-the-
+    /// hour (major) and seconds-elapsed-in-the-current-minute (minor, resetting every minute).
+    /// Both are expressed as a fraction of the full circle (0...1) so `Circle.trim` can draw
+    /// them directly; the `-90°` rotation moves the trim's start from the 3 o'clock point (its
+    /// default) to 12 o'clock, matching this ring's "0 at top, clockwise" convention.
+    private var majorUnitElapsedFraction: Double {
+        let calendar = Calendar.current
+        let h = calendar.component(.hour, from: currentTime)
+        let m = calendar.component(.minute, from: currentTime)
+        let s = calendar.component(.second, from: currentTime)
 
-        return Image(systemName: "person.fill")
-            .font(.system(size: iconSize, weight: .semibold))
-            .foregroundStyle(.primary)
-            .frame(width: frameSize, height: frameSize)
+        switch scope {
+        case .day:
+            return Double(h * 3600 + m * 60 + s) / 86400
+        case .hour:
+            return Double(m * 60 + s) / 3600
+        }
+    }
+
+    /// The minor unit sweeps the full 360° circle just like the major unit does, just on a
+    /// shorter period — resetting every major unit (every hour in day scope, every minute in
+    /// hour scope) and always starting fresh from the top, the same as the major unit's own
+    /// start point.
+    private var minorUnitElapsedDegrees: Double {
+        let calendar = Calendar.current
+        let m = calendar.component(.minute, from: currentTime)
+        let s = calendar.component(.second, from: currentTime)
+
+        switch scope {
+        case .day:
+            return Double(m * 60 + s) / 3600 * 360
+        case .hour:
+            return Double(s) / 60 * 360
+        }
+    }
+
+    private var minorUnitRadius: CGFloat {
+        innerRadius
+    }
+
+    private var majorMinorMarkerColor: Color {
+        colorScheme == .dark ? Color.white : Color.black
+    }
+
+    private var majorUnitElapsedArc: some View {
+        Circle()
+            .trim(from: 0, to: majorUnitElapsedFraction)
+            .stroke(majorMinorMarkerColor, style: StrokeStyle(lineWidth: 2, lineCap: .butt))
+            .rotationEffect(.degrees(-90))
+            .frame(width: outerRadius * 2, height: outerRadius * 2)
+    }
+
+    private var minorUnitElapsedArc: some View {
+        Circle()
+            .trim(from: 0, to: minorUnitElapsedDegrees / 360)
+            .stroke(Color.green, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+            .rotationEffect(.degrees(-90))
+            .frame(width: minorUnitRadius * 2, height: minorUnitRadius * 2)
+    }
+
+    /// The round "knob" at the tip of the minor-unit arc — its angle matches the arc's own end
+    /// point, using the same `-90°` top-alignment correction applied everywhere else in this
+    /// file when converting a 0°-at-top angle into standard (0°-at-3-o'clock) trig terms.
+    private var minorUnitElapsedTip: some View {
+        let radians = (minorUnitElapsedDegrees - 90) * .pi / 180
+
+        return Circle()
+            .fill(majorMinorMarkerColor)
+            .frame(width: 6, height: 6)
+            .position(
+                x: size / 2 + cos(radians) * minorUnitRadius,
+                y: size / 2 + sin(radians) * minorUnitRadius
+            )
+    }
+
+    /// A small live time readout that rides along with the white tip marker, always sitting a
+    /// bit further inward (in the empty space toward the center) so it never collides with the
+    /// ring, ticks, or numbers regardless of where the marker currently is — the same idea as
+    /// the little timestamp that follows the scrubber handle in YouTube/Spotify's timeline.
+    private var followingTimeLabel: some View {
+        let radians = (minorUnitElapsedDegrees - 90) * .pi / 180
+        let radius = minorUnitRadius - 24
+
+        return Text(followingTimeText)
+            .font(.system(size: 14, weight: .semibold).monospacedDigit())
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
             .position(
                 x: size / 2 + cos(radians) * radius,
                 y: size / 2 + sin(radians) * radius
             )
+    }
+
+    private var followingTimeText: String {
+        switch scope {
+        case .day:
+            return TimeCircleFormat.twentyFourHourClock(currentTime)
+        case .hour:
+            return TimeCircleFormat.minutesSeconds(currentTime)
+        }
+    }
+
+    /// The tracked activity's emoji, shown only in the Hour view while a session is running —
+    /// it disappears the moment tracking stops, and never appears in the Day view.
+    @ViewBuilder
+    private var centerActivityEmoji: some View {
+        if scope == .hour, state != .stopped, let task, !task.emoji.isEmpty {
+            Text(task.emoji)
+                .font(.system(size: 44))
+        }
     }
 
     private func angleForDate(_ date: Date) -> Double {

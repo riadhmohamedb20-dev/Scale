@@ -17,7 +17,7 @@ final class LiveActivityManager {
         runningStartTime: Date?,
         elapsedBeforePause: TimeInterval,
         isPaused: Bool,
-        budgetCountdownRemaining: TimeInterval?
+        priorTodayElapsed: TimeInterval
     ) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
 
@@ -26,7 +26,7 @@ final class LiveActivityManager {
             runningStartTime: runningStartTime,
             elapsedBeforePause: elapsedBeforePause,
             isPaused: isPaused,
-            budgetCountdownRemaining: budgetCountdownRemaining
+            priorTodayElapsed: priorTodayElapsed
         )
 
         Task {
@@ -66,21 +66,21 @@ final class LiveActivityManager {
         runningStartTime: Date?,
         elapsedBeforePause: TimeInterval,
         isPaused: Bool,
-        budgetCountdownRemaining: TimeInterval?
+        priorTodayElapsed: TimeInterval
     ) -> ScaleActivityAttributes.ContentState {
         let now = Date()
 
         // While running, elapsed = now - displayStartDate must hold, anchored to the fresh
         // runningStartTime. While paused there's no running anchor, so anchor to "now" itself —
-        // paired with pauseDate (also "now" below), that freezes a count-up display at exactly
+        // paired with pauseDate (also "now" below), that freezes the count-up display at exactly
         // elapsedBeforePause. Using the original session startTime here instead would corrupt
-        // the count-up freeze value for None-type activities after more than one pause/resume.
-        let displayStartDate = (runningStartTime ?? now).addingTimeInterval(-elapsedBeforePause)
+        // the count-up freeze value after more than one pause/resume. Shifting further back by
+        // priorTodayElapsed makes the displayed count-up read as cumulative elapsed for today
+        // (matching the in-app ring/panel), not just elapsed in this particular run.
+        let displayStartDate = (runningStartTime ?? now)
+            .addingTimeInterval(-elapsedBeforePause)
+            .addingTimeInterval(-priorTodayElapsed)
 
-        // Always a fresh "now + remaining" snapshot, so Text(timerInterval:) can tick live on its
-        // own from here with no further app-side updates. When paused, pauseDate is set to this
-        // same "now", so the native timer text freezes at exactly budgetCountdownRemaining.
-        let countdownEndDate = budgetCountdownRemaining.map { now.addingTimeInterval($0) }
         let pauseDate = isPaused ? now : nil
 
         return ScaleActivityAttributes.ContentState(
@@ -91,7 +91,6 @@ final class LiveActivityManager {
             colorRed: task.color.red,
             colorGreen: task.color.green,
             colorBlue: task.color.blue,
-            countdownEndDate: countdownEndDate,
             pauseDate: pauseDate
         )
     }

@@ -7,6 +7,7 @@ struct AddTaskView: View {
     @Binding var taskDescription: String
     @Binding var taskType: ActivityType?
     @Binding var taskPriority: ActivityPriority?
+    @Binding var taskEmoji: String
     @Environment(\.colorScheme) private var colorScheme
 
     var onDone: () -> Void
@@ -32,6 +33,7 @@ struct AddTaskView: View {
                 Section {
                     TextField("Activity title", text: $taskName)
                     ColorPicker("Activity color", selection: $taskColor)
+                    EmojiField(emoji: $taskEmoji)
                 } header: {
                     Text("Activity")
                         .padding(.leading, -20)

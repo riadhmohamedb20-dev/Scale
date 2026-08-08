@@ -7,7 +7,7 @@ import UIKit
 import AppKit
 #endif
 
-private enum MainTab {
+private enum MainTab: Equatable {
     case today
     case todo
     case statistics
@@ -18,14 +18,18 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("appAppearanceMode") private var appearanceModeRaw = AppAppearanceMode.system.rawValue
-    @StateObject private var viewModel = TimeCircleViewModel()
+    @ObservedObject var viewModel: TimeCircleViewModel
     @State private var selectedMainTab: MainTab = .today
     @State private var selectedTimelinePage = 0
     @State private var isShowingSaveConfirmation = false
     @State private var isDatePillPressed = false
+    @State private var datePillLongPressTimer: DispatchWorkItem?
+    @State private var datePillDidTriggerLongPress = false
     @State private var isShowingAddOptions = false
     @State private var isChoosingActivityType = false
     @State private var browsingActivityType: ActivityType?
+    @State private var isChoosingUnlinkedActivityType = false
+    @State private var unlinkedActivityTypeForPriority: ActivityType?
     @State private var isShowingMoreOptions = false
     @State private var isShowingDataOptions = false
     @State private var isShowingBackupShareSheet = false
@@ -46,7 +50,6 @@ struct ContentView: View {
     private let idleControlsTopPadding: CGFloat = 23
     private let trackingTopBarHeight: CGFloat = 36
     private let trackingTopBarHorizontalPadding: CGFloat = 16
-    private let returnToTodayButtonTrailingOffset: CGFloat = 46
 
     private var appearanceMode: AppAppearanceMode {
         AppAppearanceMode(rawValue: appearanceModeRaw) ?? .system
@@ -113,6 +116,10 @@ struct ContentView: View {
                     get: { viewModel.editingTaskPriority },
                     set: viewModel.updateEditingTaskPriority
                 ),
+                taskEmoji: Binding(
+                    get: { viewModel.editingTaskEmoji },
+                    set: viewModel.updateEditingTaskEmoji
+                ),
                 onDone: viewModel.closeTaskEditor,
                 onDelete: viewModel.deleteEditingTask
             )
@@ -124,6 +131,7 @@ struct ContentView: View {
                 taskDescription: $viewModel.newTaskDescription,
                 taskType: $viewModel.newTaskType,
                 taskPriority: $viewModel.newTaskPriority,
+                taskEmoji: $viewModel.newTaskEmoji,
                 onDone: viewModel.addTask,
                 onCancel: viewModel.closeAddTaskSheet
             )
@@ -144,10 +152,12 @@ struct ContentView: View {
             NavigationStack {
                 ChooseActivityTypeView(
                     recentTasks: viewModel.recentlyTrackedTasks,
+                    tasks: viewModel.tasks,
                     onCancel: { isChoosingActivityType = false },
                     onSelect: { type in browsingActivityType = type },
                     onSelectTask: { task in selectTaskFromActivityPicker(task) },
-                    onLongPressTask: { task in editTaskFromActivityPicker(task) }
+                    onLongPressTask: { task in editTaskFromActivityPicker(task) },
+                    onContinueWithoutActivity: { isChoosingUnlinkedActivityType = true }
                 )
                 .toolbar(.hidden, for: .navigationBar)
                 .navigationDestination(item: $browsingActivityType) { type in
@@ -165,6 +175,21 @@ struct ContentView: View {
                         onLongPress: { task in editTaskFromActivityPicker(task) }
                     )
                     .toolbar(.hidden, for: .navigationBar)
+                }
+                .navigationDestination(isPresented: $isChoosingUnlinkedActivityType) {
+                    ChooseUnlinkedActivityTypeView(
+                        onCancel: { isChoosingUnlinkedActivityType = false },
+                        onSelect: { type in selectUnlinkedActivityType(type) }
+                    )
+                    .toolbar(.hidden, for: .navigationBar)
+                    .navigationDestination(item: $unlinkedActivityTypeForPriority) { type in
+                        ChooseUnlinkedActivityPriorityView(
+                            type: type,
+                            onCancel: { unlinkedActivityTypeForPriority = nil },
+                            onConfirm: { priority in resolveUnlinkedActivitySelection(type: type, priority: priority) }
+                        )
+                        .toolbar(.hidden, for: .navigationBar)
+                    }
                 }
             }
         }
@@ -232,6 +257,7 @@ struct ContentView: View {
                 showsDeleteButton: viewModel.shouldShowEditingSessionDeleteButton,
                 dateRange: viewModel.editingSessionDateRange,
                 activities: viewModel.tasks,
+                completedTasks: viewModel.editingSessionCompletedTasks,
                 onSave: viewModel.saveEditingSession,
                 onDelete: viewModel.deleteEditingSession
             )
@@ -297,6 +323,38 @@ struct ContentView: View {
             Button("OK", role: .cancel) { }
         } message: {
             Text(viewModel.noFuelAlertMessage)
+        }
+        .sheet(isPresented: $viewModel.isShowingNoToDoTasksPrompt) {
+            NoToDoTasksPromptView(
+                activityName: viewModel.noToDoTasksPromptDisplayName,
+                showsDontShowAgainToggle: viewModel.noToDoTasksPromptShowsDontShowAgainToggle,
+                onCreateTask: handleCreateTaskFromNoTasksPrompt,
+                onNotNow: handleNotNowFromNoTasksPrompt
+            )
+        }
+        .sheet(isPresented: $viewModel.isShowingNoRemainingTasksPrompt) {
+            let activityName = viewModel.noRemainingTasksPromptDisplayName
+            NoToDoTasksPromptView(
+                activityName: activityName,
+                title: "No Remaining Tasks",
+                message: "\(activityName) has no remaining tasks. Would you like to create one?",
+                showsDontShowAgainToggle: false,
+                onCreateTask: { _ in handleCreateTaskFromNoRemainingTasksPrompt() },
+                onNotNow: { _ in handleNotNowFromNoRemainingTasksPrompt() }
+            )
+        }
+        .sheet(isPresented: $viewModel.isShowingSettings) {
+            SettingsView(viewModel: viewModel)
+        }
+        .onChange(of: viewModel.isSelectingToDoItemForTracking, returnToTrackingTabIfNeeded)
+        .onChange(of: viewModel.isCreatingToDoItemToStartTracking, returnToTrackingTabIfNeeded)
+        .onChange(of: selectedMainTab, cancelToDoSelectionIfLeftTodoTab)
+        .onChange(of: viewModel.state) { oldValue, newValue in
+            guard viewModel.isViewingToday else { return }
+
+            if oldValue == .stopped, newValue == .running {
+                switchToHourlyPage()
+            }
         }
         #if canImport(UIKit)
         .sheet(isPresented: $isShowingBackupShareSheet) {
@@ -492,20 +550,28 @@ struct ContentView: View {
                 appearanceMenu
 
                 Spacer()
+
+                settingsButton
             }
             .frame(height: trackingTopBarHeight, alignment: .center)
 
             dateSelector
-                .overlay(alignment: .trailing) {
-                    if !viewModel.isViewingToday {
-                        returnToTodayButton
-                            .offset(x: returnToTodayButtonTrailingOffset)
-                    }
-                }
         }
         .frame(maxWidth: .infinity)
         .frame(height: trackingTopBarHeight, alignment: .center)
         .padding(.horizontal, trackingTopBarHorizontalPadding)
+    }
+
+    private var settingsButton: some View {
+        Button {
+            viewModel.isShowingSettings = true
+        } label: {
+            Image(systemName: "gearshape")
+                .font(.system(size: 21, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 36, height: 36)
+        }
+        .buttonStyle(.plain)
     }
 
     private var appearanceMenu: some View {
@@ -542,9 +608,26 @@ struct ContentView: View {
         .contentShape(Capsule())
         .scaleEffect(isDatePillPressed ? 0.98 : 1)
         .animation(.easeInOut(duration: 0.12), value: isDatePillPressed)
-        .gesture(datePillGesture)
+        .highPriorityGesture(datePillGesture)
+        .onChange(of: viewModel.isShowingHistoryPicker) { oldValue, newValue in
+            // See ToDoView's dateSelector for why this reset is needed: the sheet presentation
+            // triggered by a long press cancels the in-flight touch before the DragGesture's
+            // `onEnded` runs, so `datePillDidTriggerLongPress` never gets reset by its `defer`
+            // and silently swallows the next tap unless we reset it here on dismissal.
+            if oldValue, !newValue {
+                datePillLongPressTimer?.cancel()
+                datePillLongPressTimer = nil
+                datePillDidTriggerLongPress = false
+                isDatePillPressed = false
+            }
+        }
     }
 
+    /// Tap vs. swipe vs. long-press all share this one `DragGesture(minimumDistance: 0)` so a
+    /// press can start out ambiguous and resolve as any of the three. Swipe still moves the
+    /// selected day by one. A tap opens the Heatmap while viewing today, or returns to today
+    /// while viewing a past day. A long press (past day only — today does nothing extra beyond
+    /// its own tap behavior) opens the Heatmap without first needing to return to today.
     private var datePillGesture: some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
@@ -555,8 +638,29 @@ struct ContentView: View {
                     && abs(horizontalDistance) > abs(verticalDistance)
 
                 isDatePillPressed = !isSwipe
+
+                if datePillLongPressTimer == nil, !datePillDidTriggerLongPress, !isSwipe, !viewModel.isViewingToday {
+                    let timer = DispatchWorkItem {
+                        datePillDidTriggerLongPress = true
+                        isDatePillPressed = false
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            viewModel.openHistoryPicker()
+                        }
+                    }
+                    datePillLongPressTimer = timer
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: timer)
+                }
+
+                if isSwipe {
+                    datePillLongPressTimer?.cancel()
+                    datePillLongPressTimer = nil
+                }
             }
             .onEnded { value in
+                datePillLongPressTimer?.cancel()
+                datePillLongPressTimer = nil
+                defer { datePillDidTriggerLongPress = false }
+
                 let horizontalDistance = value.translation.width
                 let verticalDistance = value.translation.height
                 let horizontalThreshold: CGFloat = 45
@@ -564,6 +668,8 @@ struct ContentView: View {
                     && abs(horizontalDistance) > abs(verticalDistance)
 
                 isDatePillPressed = false
+
+                guard !datePillDidTriggerLongPress else { return }
 
                 if isSwipe {
                     withAnimation(.easeInOut(duration: 0.25)) {
@@ -575,7 +681,11 @@ struct ContentView: View {
                     }
                 } else {
                     withAnimation(.easeInOut(duration: 0.25)) {
-                        viewModel.openHistoryPicker()
+                        if viewModel.isViewingToday {
+                            viewModel.openHistoryPicker()
+                        } else {
+                            viewModel.selectToday()
+                        }
                     }
                 }
             }
@@ -600,22 +710,6 @@ struct ContentView: View {
                     }
                 }
             }
-    }
-
-    private var returnToTodayButton: some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.25)) {
-                viewModel.selectToday()
-            }
-        } label: {
-            Image(systemName: "calendar.badge.clock")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(colorScheme == .light ? Color.black.opacity(0.82) : .white)
-                .frame(width: 34, height: 34)
-                .background(colorScheme == .light ? Color.black.opacity(0.08) : Color.white.opacity(0.14))
-                .clipShape(Circle())
-        }
-        .buttonStyle(.plain)
     }
 
     private func timelinePager(pageWidth: CGFloat, circleSize: CGFloat) -> some View {
@@ -653,9 +747,7 @@ struct ContentView: View {
             startTime: viewModel.isViewingToday ? viewModel.currentStartTime : nil,
             activeIntervals: viewModel.isViewingToday ? viewModel.currentActiveIntervals : [],
             elapsed: viewModel.isViewingToday ? viewModel.elapsed : 0,
-            displayElapsed: scope == .hour ? viewModel.timelineCountdownDisplay : viewModel.timelineDisplayElapsed,
             currentTime: viewModel.selectedDayCurrentTime,
-            showsCurrentTimeWhenEmpty: viewModel.isViewingToday,
             highlightedSessionIDs: viewModel.isViewingToday ? [] : viewModel.highlightedReviewSessionIDs,
             selectedSession: viewModel.selectedSession,
             onSelectSession: viewModel.openSessionEditor,
@@ -719,7 +811,7 @@ struct ContentView: View {
                             .font(.system(size: 38, weight: .bold))
                             .foregroundStyle(.white)
                             .frame(width: 96, height: 96)
-                            .background(.orange)
+                            .background(viewModel.selectedTask?.color.color ?? .orange)
                             .clipShape(Circle())
                     }
 
@@ -849,6 +941,23 @@ struct ContentView: View {
                         color: accentColor
                     )
                 }
+
+                if !viewModel.hasOptedOutOfTaskTracking(task) {
+                    cardDivider
+
+                    Button {
+                        viewModel.beginManagingCurrentSessionToDoItem()
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            selectedMainTab = .todo
+                        }
+                    } label: {
+                        taskCardStat(
+                            value: viewModel.currentSessionToDoItem?.title ?? "None selected",
+                            color: accentColor
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             .padding(.top, 10)
 
@@ -901,6 +1010,22 @@ struct ContentView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
         }
+    }
+
+    private func taskCardStat(value: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Task")
+                .font(.system(size: 15, weight: .regular))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Text(value)
+                .font(.system(size: 17, weight: .bold))
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var cardDivider: some View {
@@ -988,11 +1113,123 @@ struct ContentView: View {
         }
     }
 
+    /// "Continue Without Selecting an Activity", step 2: Pain/Pleasure need a priority/level
+    /// first (step 3), Other goes straight to resolving the To-Do gate — no additional
+    /// questions.
+    private func selectUnlinkedActivityType(_ type: ActivityType) {
+        if type.hasPriorityTiers {
+            unlinkedActivityTypeForPriority = type
+        } else {
+            resolveUnlinkedActivitySelection(type: type, priority: nil)
+        }
+    }
+
+    /// "Continue Without Selecting an Activity", final step — marks the ephemeral "no
+    /// activity" task selected (without starting the timer), then routes through the exact
+    /// same post-selection To-Do gate a real activity goes through, just sourced from that
+    /// type/priority's "General" tasks instead of a specific activity's own tasks.
+    private func resolveUnlinkedActivitySelection(type: ActivityType, priority: ActivityPriority?) {
+        isChoosingActivityType = false
+        browsingActivityType = nil
+        isChoosingUnlinkedActivityType = false
+        unlinkedActivityTypeForPriority = nil
+
+        guard viewModel.prepareUnlinkedActivitySelection(type: type, priority: priority) else { return }
+
+        switch viewModel.evaluateGeneralPostSelectionToDoGate(type: type, priority: priority) {
+        case .needsToDoSelection:
+            withAnimation(.easeInOut(duration: 0.25)) {
+                selectedMainTab = .todo
+            }
+        case .needsNoTasksDecision:
+            break
+        case .readyToStart:
+            viewModel.beginTrackingSelectedTask()
+        }
+    }
+
     private func selectTaskFromActivityPicker(_ task: TaskItem) {
         isChoosingActivityType = false
         browsingActivityType = nil
-        if viewModel.selectTaskAndStart(task) {
-            switchToHourlyPage()
+        guard viewModel.selectTask(task) else { return }
+
+        switch viewModel.evaluatePostSelectionToDoGate(for: task) {
+        case .needsToDoSelection:
+            withAnimation(.easeInOut(duration: 0.25)) {
+                selectedMainTab = .todo
+            }
+        case .needsNoTasksDecision:
+            break
+        case .readyToStart:
+            viewModel.beginTrackingSelectedTask()
+        }
+    }
+
+    private func handleCreateTaskFromNoTasksPrompt(dontShowAgain: Bool) {
+        guard let source = viewModel.dismissNoToDoTasksPrompt(dontShowAgain: dontShowAgain) else { return }
+
+        withAnimation(.easeInOut(duration: 0.25)) {
+            selectedMainTab = .todo
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            openAddToDoItemSheet(for: source)
+            viewModel.isCreatingToDoItemToStartTracking = true
+        }
+    }
+
+    private func handleNotNowFromNoTasksPrompt(dontShowAgain: Bool) {
+        viewModel.dismissNoToDoTasksPrompt(dontShowAgain: dontShowAgain)
+        viewModel.beginTrackingSelectedTask()
+    }
+
+    private func handleCreateTaskFromNoRemainingTasksPrompt() {
+        guard let source = viewModel.dismissNoRemainingTasksPrompt() else { return }
+
+        withAnimation(.easeInOut(duration: 0.25)) {
+            selectedMainTab = .todo
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            openAddToDoItemSheet(for: source)
+            viewModel.isCreatingToDoItemToStartTracking = true
+        }
+    }
+
+    /// Presets the Add-To-Do sheet to match whichever `ToDoSelectionSource` prompted its
+    /// creation — a specific activity, or a bare type/priority for "Continue Without
+    /// Selecting an Activity" — so the task that comes out of it lands back in the same
+    /// bucket the gate was sourcing from.
+    private func openAddToDoItemSheet(for source: ToDoSelectionSource) {
+        switch source {
+        case .activity(let taskID):
+            viewModel.openAddToDoItemSheet(presetActivityTaskID: taskID)
+        case .general(let type, let priority):
+            viewModel.openAddToDoItemSheet(presetActivityType: type, presetPriority: priority)
+        }
+    }
+
+    private func handleNotNowFromNoRemainingTasksPrompt() {
+        viewModel.dismissNoRemainingTasksPrompt()
+        viewModel.beginTrackingSelectedTask()
+    }
+
+    private func returnToTrackingTabIfNeeded(oldValue: Bool, newValue: Bool) {
+        if oldValue, !newValue, selectedMainTab == .todo {
+            withAnimation(.easeInOut(duration: 0.25)) {
+                selectedMainTab = .today
+            }
+        }
+    }
+
+    /// Covers leaving the To-Do tab without an explicit pick — swiping back, or tapping the
+    /// Life Chart/Money tab bar buttons directly — while a To-Do task selection is still in
+    /// progress. An explicit pick or the Cancel button already resolve the selection (setting
+    /// `isSelectingToDoItemForTracking` false) before the tab changes, so this only fires for
+    /// the "left some other way" case.
+    private func cancelToDoSelectionIfLeftTodoTab(oldValue: MainTab, newValue: MainTab) {
+        if oldValue == .todo, newValue != .todo, viewModel.isSelectingToDoItemForTracking {
+            viewModel.cancelToDoItemSelection()
         }
     }
 
@@ -1085,9 +1322,7 @@ struct ContentView: View {
             startTime: viewModel.isViewingToday ? viewModel.currentStartTime : nil,
             activeIntervals: viewModel.isViewingToday ? viewModel.currentActiveIntervals : [],
             elapsed: viewModel.isViewingToday ? viewModel.elapsed : 0,
-            displayElapsed: viewModel.selectedTaskDisplayElapsed,
             currentTime: viewModel.selectedDayCurrentTime,
-            showsCurrentTimeWhenEmpty: viewModel.isViewingToday,
             highlightedSessionIDs: [],
             selectedSession: viewModel.selectedSession,
             onSelectSession: { _ in },
@@ -1241,6 +1476,74 @@ private struct BackupShareSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) { }
 }
 #endif
+
+private struct NoToDoTasksPromptView: View {
+    let activityName: String
+    var title: String = "No Tasks Yet"
+    var message: String? = nil
+    var showsDontShowAgainToggle: Bool = true
+    let onCreateTask: (Bool) -> Void
+    let onNotNow: (Bool) -> Void
+
+    @State private var doNotShowAgain = false
+
+    private var resolvedMessage: String {
+        message ?? "\(activityName) doesn't have any tasks yet. Would you like to create one?"
+    }
+
+    var body: some View {
+        VStack(spacing: 20) {
+            VStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundStyle(.primary)
+
+                Text(resolvedMessage)
+                    .font(.system(size: 15))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(.top, 28)
+            .padding(.horizontal, 24)
+
+            if showsDontShowAgainToggle {
+                Toggle("Don't show this again for \(activityName)", isOn: $doNotShowAgain)
+                    .font(.system(size: 15))
+                    .padding(.horizontal, 24)
+            }
+
+            Spacer(minLength: 0)
+
+            VStack(spacing: 12) {
+                Button {
+                    onCreateTask(doNotShowAgain)
+                } label: {
+                    Text("Create a Task")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Capsule().fill(Color.accentColor))
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    onNotNow(doNotShowAgain)
+                } label: {
+                    Text("Not Now")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 24)
+        }
+        .presentationDetents([.medium])
+    }
+}
 
 /// Renders each contribution as its own contiguous colored slice, in chronological order,
 /// widths proportional to duration/total — the same idea as how each session already gets its
@@ -1520,12 +1823,7 @@ private struct TaskPickerSection: Identifiable {
     }
 
     var title: String {
-        switch activityType {
-        case .none:
-            return "Neutral"
-        default:
-            return activityType.title
-        }
+        activityType.title
     }
 
     var headerTitle: String {

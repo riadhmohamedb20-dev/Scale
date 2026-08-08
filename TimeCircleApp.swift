@@ -24,11 +24,12 @@ struct TimeCircleApp: App {
 }
 
 private struct RootView: View {
+    @StateObject private var viewModel = TimeCircleViewModel()
     @State private var isShowingLaunchAnimation = true
 
     var body: some View {
         ZStack {
-            ContentView()
+            ContentView(viewModel: viewModel)
                 .opacity(isShowingLaunchAnimation ? 0 : 1)
 
             if isShowingLaunchAnimation {
@@ -37,6 +38,8 @@ private struct RootView: View {
             }
         }
         .onAppear {
+            GlobalReminderPresenter.shared.attach(to: viewModel)
+
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.55) {
                 withAnimation(.easeInOut(duration: 0.22)) {
                     isShowingLaunchAnimation = false

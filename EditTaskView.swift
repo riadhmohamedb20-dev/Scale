@@ -6,6 +6,7 @@ struct EditTaskView: View {
     @Binding var taskDescription: String
     @Binding var taskType: ActivityType
     @Binding var taskPriority: ActivityPriority?
+    @Binding var taskEmoji: String
 
     var onDone: () -> Void
     var onDelete: () -> Void
@@ -18,6 +19,7 @@ struct EditTaskView: View {
                 Section("Activity") {
                     TextField("Activity title", text: $taskName)
                     ColorPicker("Activity color", selection: $taskColor)
+                    EmojiField(emoji: $taskEmoji)
                 }
 
                 Section {

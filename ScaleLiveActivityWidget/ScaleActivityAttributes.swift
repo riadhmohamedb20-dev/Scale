@@ -1,6 +1,4 @@
 import Foundation
-
-#if canImport(ActivityKit)
 import ActivityKit
 
 struct ScaleActivityAttributes: ActivityAttributes {
@@ -19,4 +17,3 @@ struct ScaleActivityAttributes: ActivityAttributes {
 
     var activityID: UUID
 }
-#endif

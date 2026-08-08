@@ -8,7 +8,7 @@ extension ActivityType {
         case .pleasure:
             return "face.smiling"
         case .none:
-            return "minus.circle"
+            return "circle.grid.2x2"
         }
     }
 
@@ -41,7 +41,7 @@ extension ActivityType {
         case .pleasure:
             return "Activities that you enjoy and bring you satisfaction."
         case .none:
-            return "Activities that are neutral or neither painful nor pleasurable."
+            return "Activities that don't fit into Pain or Pleasure."
         }
     }
 }
